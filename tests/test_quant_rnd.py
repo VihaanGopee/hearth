@@ -5,6 +5,7 @@ import os
 import struct
 import sys
 import tempfile
+import time
 import unittest
 
 import numpy as np
@@ -225,6 +226,67 @@ class TestSchemes(unittest.TestCase):
         self.assertLessEqual(q.bpw, i.bpw)
         self.assertGreaterEqual(sqnr_db(self.w, q.reconstruct()),
                                 sqnr_db(self.w, i.reconstruct()) - 1.0)
+
+
+class TestReconstructVectorized(unittest.TestCase):
+    """Regression: reconstruct() was a per-group boolean-mask loop --
+    O(n^2/group_size), ~25 s per 2M params, which made full-model
+    dequantization take ~18 min per scheme and killed the step-2b sweep.
+    It is now vectorized O(n) (~25 ms per 2M). These tests pin the new
+    code to the old per-group semantics and guard the model-scale runtime.
+    """
+
+    @staticmethod
+    def _naive_reconstruct(q):
+        # The pre-fix algorithm, written out as an independent reference.
+        n = q.codes.shape[0]
+        g = q.group_size
+        out = np.zeros(n, dtype=np.float32)
+        group_id = np.arange(n) // g
+        for gi in range((n + g - 1) // g):
+            mask = group_id == gi
+            c = q.codes[mask].astype(np.float32)
+            s = q.scales[gi]
+            if q.name in ("dual_scale_ternary", "ternary_lloyd_ds",
+                          "ternary_1step_ds"):
+                rec = np.where(c > 0, s[0], np.where(c < 0, -s[1], 0.0))
+            elif q.name in ("int2_kmeans", "int2_kmeans_q8"):
+                rec = s[c.astype(np.int64)]
+            else:
+                rec = c * s[0]
+            out[mask] = rec
+        if q._outlier_vals is not None:
+            out[q._outlier_idx] = q._outlier_vals
+        return out
+
+    def test_matches_naive_loop_all_decode_branches(self):
+        # Non-multiple-of-group-size length exercises the trailing
+        # partial group, the edge case the vectorized indexing must get
+        # right.
+        rng = np.random.default_rng(1234)
+        w = (rng.standard_normal(3000) * 0.02).astype(np.float32)
+        cases = [
+            ("ternary_1step", {}),        # single-scale branch
+            ("ternary_1step_ds", {}),     # dual-scale branch
+            ("int2_kmeans_q8", {}),       # codebook branch
+            ("ternary_outlier", {"n_outliers": 2}),  # + exact outliers
+        ]
+        for name, kw in cases:
+            q = SCHEMES[name](w, group_size=128, **kw)
+            np.testing.assert_array_equal(q.reconstruct(),
+                                          self._naive_reconstruct(q),
+                                          err_msg=name)
+
+    def test_reconstruct_model_scale_is_fast(self):
+        # Generous bound: pre-fix took ~25 s here; fixed takes ~25 ms.
+        rng = np.random.default_rng(7)
+        w = (rng.standard_normal(2_000_000) * 0.02).astype(np.float32)
+        q = SCHEMES["ternary_1step"](w, group_size=128)
+        t0 = time.time()
+        r = q.reconstruct()
+        self.assertLess(time.time() - t0, 10.0)
+        self.assertEqual(r.shape, w.shape)
+        self.assertTrue(np.all(np.isfinite(r)))
 
 
 class TestBench(unittest.TestCase):
@@ -1222,6 +1284,124 @@ class TestGPT2RealWeights(unittest.TestCase):
         self.assertTrue(math.isfinite(ppl))
         self.assertGreater(ppl, 1.0)
         self.assertLess(ppl, 500.0)
+
+
+from src.quant_rnd.ppl import (
+    DEFAULT_SWEEP,
+    parse_args as ppl_parse_args,
+    perplexity_of,
+    quantize_model,
+)
+
+
+class TestQuantizeModel(unittest.TestCase):
+    """Whole-model quantization plumbing (ppl.py), on a fake weight dict.
+
+    Real-model perplexity numbers live in the research log, not in the
+    suite: a full forward costs ~40 s on this VM. These tests cover the
+    mechanics; one gated end-to-end test below runs the real model on
+    16 tokens.
+    """
+
+    @staticmethod
+    def _fake_dict():
+        rng = np.random.default_rng(7)
+        return {
+            # linear weights: quantized
+            "h.0.mlp.c_fc.weight": rng.standard_normal((64, 32)).astype(np.float32),
+            "h.0.attn.c_proj.weight": (0.1 * rng.standard_normal((32, 64))).astype(np.float32),
+            # pass-through: embeddings, biases, layernorm
+            "wte.weight": rng.standard_normal((50, 64)).astype(np.float32),
+            "h.0.mlp.c_fc.bias": rng.standard_normal((32,)).astype(np.float32),
+            "h.0.ln_1.weight": np.ones(64, dtype=np.float32),
+        }
+
+    def test_keys_shapes_and_input_untouched(self):
+        for name in ("ternary_uniform", "ternary_1step", "ternary_1step_ds",
+                     "int2_symmetric", "int2_kmeans_q8"):
+            fake = self._fake_dict()
+            before = {k: v.copy() for k, v in fake.items()}
+            out, bpw = quantize_model(fake, name, group_size=32)
+            self.assertEqual(set(out), set(fake))
+            for k in fake:
+                self.assertEqual(out[k].shape, fake[k].shape)
+                np.testing.assert_array_equal(fake[k], before[k])
+            self.assertTrue(math.isfinite(bpw) and bpw > 0)
+            for k, v in out.items():
+                self.assertTrue(np.all(np.isfinite(v)), k)
+
+    def test_passthrough_tensors_unchanged(self):
+        fake = self._fake_dict()
+        out, _ = quantize_model(fake, "ternary_uniform", group_size=32)
+        for k in ("wte.weight", "h.0.mlp.c_fc.bias", "h.0.ln_1.weight"):
+            np.testing.assert_array_equal(out[k], fake[k])
+        # but a linear matrix must actually change under quantization
+        self.assertFalse(
+            np.allclose(out["h.0.mlp.c_fc.weight"],
+                        fake["h.0.mlp.c_fc.weight"]))
+
+    def test_unknown_scheme_raises(self):
+        with self.assertRaises(KeyError):
+            quantize_model(self._fake_dict(), "nope", group_size=32)
+
+    def test_deterministic(self):
+        a, b1 = quantize_model(self._fake_dict(), "ternary_1step", group_size=32)
+        b, b2 = quantize_model(self._fake_dict(), "ternary_1step", group_size=32)
+        self.assertEqual(b1, b2)
+        for k in a:
+            np.testing.assert_array_equal(a[k], b[k])
+
+    def test_bpw_matches_scheme_bookkeeping(self):
+        # group 32 keeps the kmeans_q8 test fast and still exercises the
+        # codebook path end to end.
+        _, bpw = quantize_model(self._fake_dict(), "int2_kmeans_q8",
+                                group_size=32)
+        self.assertAlmostEqual(bpw, 2.0 + 4 * 8 / 32 + 16 / 32, places=9)
+
+    def test_cli_scheme_parsing(self):
+        # parse_args is factored for testability (same pattern as
+        # realweights.parse_args); run_sweep itself needs a real model.
+        args = ppl_parse_args(["m.safetensors", "--schemes",
+                               "ternary_uniform,int2_symmetric"])
+        self.assertEqual(args.schemes, "ternary_uniform,int2_symmetric")
+        self.assertEqual(args.group_size, 128)
+
+    def test_default_sweep_covers_both_references(self):
+        # The practical ternary reference and both naive floors must be in
+        # the default sweep; the k-means family is deliberately excluded
+        # (see ppl.py module docstring) and runs as a follow-up slice.
+        for s in ("ternary_1step", "ternary_uniform", "int2_symmetric"):
+            self.assertIn(s, DEFAULT_SWEEP)
+        for s in ("int2_kmeans", "int2_kmeans_q8"):
+            self.assertNotIn(s, DEFAULT_SWEEP)
+
+
+@unittest.skipUnless(os.path.exists(GPT2_WEIGHTS), "gpt2 weights not present")
+class TestQuantizedPerplexityEndToEnd(unittest.TestCase):
+    """Gated: quantize the real GPT-2 124M and forward 16 tokens.
+
+    The full per-scheme sweep (~40 s/forward) is a research-log artifact,
+    not a unit test. This pins the plumbing end to end cheaply: quantized
+    weights must still produce finite logits.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tensors = read_safetensors(GPT2_WEIGHTS)
+
+    def test_quantized_model_forwards_finite(self):
+        qw, bpw = quantize_model(self.tensors, "ternary_1step",
+                                 group_size=128)
+        self.assertAlmostEqual(bpw, float(np.log2(3)) + 16 / 128, places=9)
+        logits = GPT2(qw).forward(list(range(16)))
+        self.assertEqual(logits.shape, (16, 50257))
+        self.assertTrue(np.all(np.isfinite(logits)))
+
+    def test_perplexity_of_matches_model_method(self):
+        ids = list(range(16))
+        self.assertAlmostEqual(
+            perplexity_of(self.tensors, ids),
+            GPT2(self.tensors).perplexity(ids), places=9)
 
 
 if __name__ == "__main__":

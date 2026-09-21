@@ -65,25 +65,29 @@ class QuantResult:
     _outlier_idx: np.ndarray = field(default=None, repr=False)
 
     def reconstruct(self) -> np.ndarray:
-        """Dequantize back to float32, same shape as the input."""
+        """Dequantize back to float32, same shape as the input.
+
+        Vectorized over groups (fancy indexing on a group_id array):
+        the naive per-group boolean-mask loop is O(n^2/group_size) and
+        takes ~25 s per 2M params -- unusable at model scale. This is
+        O(n) with identical values.
+        """
         n = self.codes.shape[0]
         g = self.group_size
-        n_groups = (n + g - 1) // g
-        out = np.zeros(n, dtype=np.float32)
+        # group_id max is (n-1)//g, always a valid row of self.scales.
         group_id = np.arange(n) // g
-        for gi in range(n_groups):
-            mask = group_id == gi
-            c = self.codes[mask].astype(np.float32)
-            s = self.scales[gi]
-            if self.name in _DUAL_SCALE_SCHEMES:
-                rec = np.where(c > 0, s[0], np.where(c < 0, -s[1], 0.0))
-            elif self.name in _CODEBOOK_SCHEMES:
-                # s holds the effective per-group codebook (fp16-fitted or
-                # 8-bit-rounded centroids); codes index into it.
-                rec = s[c.astype(np.int64)]
-            else:
-                rec = c * s[0]
-            out[mask] = rec
+        c = self.codes.astype(np.float32)
+        s = self.scales
+        if self.name in _DUAL_SCALE_SCHEMES:
+            rec = np.where(c > 0, s[group_id, 0],
+                           np.where(c < 0, -s[group_id, 1], 0.0))
+        elif self.name in _CODEBOOK_SCHEMES:
+            # s holds the effective per-group codebook (fp16-fitted or
+            # 8-bit-rounded centroids); codes index into it.
+            rec = s[group_id, c.astype(np.int64)]
+        else:
+            rec = c * s[group_id, 0]
+        out = np.ascontiguousarray(rec, dtype=np.float32)
         if self._outlier_vals is not None:
             out[self._outlier_idx] = self._outlier_vals
         return out

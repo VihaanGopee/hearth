@@ -19,8 +19,8 @@ Honest limits, stated up front:
 - gpt2_tokenizer.py + gpt2_forward.py close the perplexity gap: a
   dependency-free GPT-2 byte-level BPE tokenizer and NumPy forward pass
   over research/data/gpt2.safetensors, giving a real fp32 perplexity
-  reference on a few hundred tokens of text. Per-scheme quantized
-  perplexity is the next step.
+  reference on a few hundred tokens of text. ppl.py adds per-scheme
+  quantized perplexity (step 2b); see research/log for the numbers.
 """
 from .schemes import (
     QuantResult,
