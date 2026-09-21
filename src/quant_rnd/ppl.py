@@ -46,6 +46,11 @@ from .schemes import GROUP_SIZE, SCHEMES
 EMBEDDING_MARKERS = ("embed", "wte", "wpe")
 
 
+# Naive int2_kmeans_q8 g128 full-model perplexity on eval_text.txt (the
+# text-conditioned anchor the checkpointed OBQ full-model measurement is
+# judged against; see roadmap — < ~400 keeps the fidelity path alive).
+NAIVE_ANCHOR_PPL_TEXT1 = 795.96
+
 # Pseudo-scheme: unquantized float32 reference. Accepted in --schemes so
 # the reference sits in the same table; bpw is reported as 32.0 (the
 # checkpoint is float32).
@@ -208,6 +213,58 @@ def quantize_one_layer_obq(tensors: dict, token_ids,
                               only_names={layer_name})
 
 
+def main_obq_ckpt(args: argparse.Namespace, tensors: dict, token_ids,
+                  text_label: str) -> None:
+    """Checkpointed full-model OBQ run (--obq-all --obq-ckpt-dir).
+
+    Quantizes up to --obq-max-layers new linear layers (each
+    checkpointed to --obq-ckpt-dir as it finishes), skipping layers
+    already in the manifest. When the last layer lands, the full weight
+    dict is assembled and the final perplexity is measured on the eval
+    text — the verdict against NAIVE_ANCHOR_PPL_TEXT1.
+    """
+    from . import obq_ckpt
+    from .fisher import capture_linear_inputs
+    linear = linear_weight_tensors(tensors)
+    t0 = time.time()
+    print(f"capturing fp32 activations for {len(linear)} layers "
+          f"(one forward)...", flush=True)
+    inputs = capture_linear_inputs(tensors, token_ids)
+    params = obq_ckpt.run_params(args.group_size, args.obq_damp,
+                                 token_ids)
+    status = obq_ckpt.quantize_missing(linear, inputs, args.obq_ckpt_dir,
+                                       params,
+                                       max_layers=args.obq_max_layers)
+    print(f"OBQ checkpoint run on [{text_label}]: {status['done']}/"
+          f"{status['total']} layers checkpointed "
+          f"({status['new']} new this run); "
+          f"resume point: {status['next'] or 'COMPLETE'}")
+    if status["next"] is not None:
+        dt = time.time() - t0
+        print(f"({dt:.1f} s; re-run to continue from the resume point)")
+        return
+    qw = obq_ckpt.assemble_full_model(tensors, args.obq_ckpt_dir)
+    ppl = perplexity_of(qw, token_ids)
+    dt = time.time() - t0
+    from .schemes import _scale_overhead
+    gs = args.group_size
+    bpw = 2.0 + 4 * 8 / gs + _scale_overhead(1, gs)  # matches obq.py
+    print(f"\n{'int2_kmeans_q8+obq-all (checkpointed)':<36} "
+          f"ppl {ppl:8.2f}  bpw {bpw:5.3f}  ({dt:5.1f} s)")
+    print(f"naive anchor (int2_kmeans_q8 g128, {text_label}): "
+          f"{NAIVE_ANCHOR_PPL_TEXT1:.2f}")
+    if ppl < 400:
+        print("verdict: BELOW the ~400 line — the fidelity path is alive; "
+              "follow up on the roadmap's next OBQ items")
+    elif ppl < NAIVE_ANCHOR_PPL_TEXT1:
+        print("verdict: beats the naive anchor but still deep in collapse "
+              "territory — directional only, do not over-read")
+    else:
+        print("verdict: AT or ABOVE the naive anchor — the Hessian "
+              "second-order story is exhausted on GPT-2 124M at this "
+              "scale; log the honest negative per the roadmap")
+
+
 def perplexity_of(tensors: dict, token_ids) -> float:
     """Perplexity of a float32 weight dict on a token id sequence."""
     return GPT2(tensors).perplexity(token_ids)
@@ -360,6 +417,16 @@ def parse_args(argv: list | None = None) -> argparse.Namespace:
     ap.add_argument("--obq-damp", type=float, default=0.01,
                     help="Hessian damping fraction for --obq/--obq-all "
                          "(default 0.01, the GPTQ convention)")
+    ap.add_argument("--obq-ckpt-dir", default=None, metavar="DIR",
+                    help="checkpointed full-model OBQ protocol (requires "
+                         "--obq-all): each layer's quantized weights are "
+                         "written to DIR as it finishes, and later runs "
+                         "skip already-done layers and resume from the "
+                         "manifest — the session-timeout unblocker")
+    ap.add_argument("--obq-max-layers", type=int, default=None, metavar="N",
+                    help="with --obq-ckpt-dir, quantize at most N new "
+                         "layers this run so a chunk fits the session "
+                         "budget; 0 = status probe only; default: no cap")
     return ap.parse_args(argv)
 
 
@@ -371,6 +438,12 @@ def check_obq_args(args: argparse.Namespace) -> None:
     if args.obq_all and (args.obq or args.one_layer):
         raise SystemExit("--obq-all is mutually exclusive with "
                          "--one-layer/--obq")
+    if args.obq_ckpt_dir and not args.obq_all:
+        raise SystemExit("--obq-ckpt-dir requires --obq-all")
+    if args.obq_max_layers is not None and not args.obq_ckpt_dir:
+        raise SystemExit("--obq-max-layers requires --obq-ckpt-dir")
+    if args.obq_max_layers is not None and args.obq_max_layers < 0:
+        raise SystemExit("--obq-max-layers must be >= 0")
 
 
 def main() -> None:
@@ -396,6 +469,9 @@ def main() -> None:
               f"({texts[0][0]})")
     ids = texts[0][1]
     if args.obq_all:
+        if args.obq_ckpt_dir:
+            main_obq_ckpt(args, tensors, ids, texts[0][0])
+            return
         t0 = time.time()
         print(f"OBQ-quantizing all linear layers "
               f"(damp {args.obq_damp})...", flush=True)
