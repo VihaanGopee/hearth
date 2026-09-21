@@ -42,7 +42,10 @@ class Agent:
                 lc.get("n_threads", 0),
                 lc.get("n_batch", 512),
                 lc.get("cache_type_k", "q8_0"),
-                lc.get("cache_type_v", "q8_0"))
+                lc.get("cache_type_v", "q8_0"),
+                speculative=lc.get("speculative", "off"),
+                draft_model_path=lc.get("draft_model_path"),
+                draft_n_tokens=lc.get("draft_n_tokens", 10))
             self.model_label = f"llamacpp:{lc.get('model_path', '?')}"
         else:
             oc = cfg["ollama"]

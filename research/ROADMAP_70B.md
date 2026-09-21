@@ -396,7 +396,26 @@ measuring where quality actually breaks.
       `launchctl setenv` / the plist that starts Ollama). When Justin
       validates on the Mac: export it before starting Ollama and document
       measured KV savings; nothing to commit here beyond this note.
-- [ ] Speculative decoding support in the llamacpp backend (draft + target model)
+- [x] Speculative decoding support in the llamacpp backend (draft + target model)
+      — LANDED 2026-09-21 (13:15 session): LlamaCppClient gains
+      speculative="off"|"prompt_lookup"|"draft_model", draft_model_path,
+      draft_n_tokens (upstream default 10; llama.cpp docs note 2 is better
+      on CPU-only). prompt_lookup uses the documented
+      LlamaPromptLookupDecoding(num_pred_tokens=...) API wired through
+      Llama(draft_model=...); draft_model mode loads a small draft GGUF
+      via LlamaDraftModel — constructor signature not verifiable on this
+      VM (package absent), so it is marked untested-on-Mac with a graceful
+      TypeError->LLMError translation. Validates mode/paths up front.
+      Default "off": existing behavior unchanged (suite pins it). Config
+      keys llamacpp.speculative / draft_model_path / draft_n_tokens wired
+      in agent.py as keyword args. 14 new tests green (fake llama_cpp
+      module injection), full suite green.
+- [ ] Speculative decoding Mac-side measurement — on Justin's Mac, measure
+      decode tok/s with speculative="prompt_lookup" (num_pred_tokens=10
+      vs 2) and with a small draft GGUF (draft_model mode) against the
+      non-speculative baseline, at matched quant; quantify the realized
+      decode speedup vs the opcount ceiling ratios (decode is
+      bandwidth-bound, so acceptance rate decides).
 - [ ] Model cascade: small fast model by default, escalate hard queries to the big model
 - [ ] Prototype MLX backend (mac-only; can't be tested on Linux — needs Justin's Mac)
 - [ ] Benchmark harness: quality-vs-quant curves on small models to validate the pipeline
