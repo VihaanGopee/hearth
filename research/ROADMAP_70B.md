@@ -16,8 +16,8 @@ measured against that number, not the full 16 GB.
 | Q4_K_M | ~4.9 | ~43 GB | No |
 | Q2_K | ~3.4 | ~29 GB | No |
 | IQ2_XXS | ~2.1 | ~18 GB | No |
-| IQ1_M | ~1.75 | ~15.3 GB | Borderline — likely OOM once macOS + KV cache are counted |
-| TQ1_0 (ternary) | ~1.69 | ~14.9 GB | Borderline — same caveat |
+| IQ1_M | ~1.75 | **16.75 GB measured** (bartowski 70B GGUFs, HF API 2026-09-21) | No — over budget even before macOS + KV cache |
+| TQ1_0 (ternary) | ~1.69 | ~14.9 GB (est.; no 70B file exists on HF as of 2026-09-21) | No — est. still over the 10–11 GB budget |
 | Native ternary 1.58-bit (BitNet-style, trained from scratch) | 1.58 | ~13.8 GB | Closest; needs a well-trained 70B ternary model, which does not publicly exist yet |
 
 **Conclusion:** dense 70B needs ≤ ~1.3 bits/param to fit comfortably, which
@@ -50,14 +50,34 @@ measuring where quality actually breaks.
 - Work item: add an **MLX backend** to Hearth (Apple Silicon native,
   unified memory). This is likely the eventual engine for the Mac.
 
-### C. GGUF sub-2-bit 70B (IQ1_M / TQ1_0) — EXPERIMENT
-- llama.cpp now ships TQ1_0/TQ2_0 ternary quants (1.7–2.1 bpw) and
-  IQ1_S/IQ1_M (1.5–1.75 bpw). A 70B IQ1_M is ~15.3 GB on disk.
-- Open questions: does Ollama's bundled llama.cpp support TQ quants yet?
-  Do 70B IQ1_M/TQ1_0 GGUFs exist on HuggingFace, and is their quality
-  (esp. tool calling, reasoning) usable?
-- Work item: when files exist, pull one on the Mac, measure quality vs a
-  32B Q4 baseline, record results here.
+### C. GGUF sub-2-bit 70B (IQ1_M / TQ1_0) — SURVEYED 2026-09-21, effectively closed
+- llama.cpp ships TQ1_0/TQ2_0 ternary quants (1.7–2.1 bpw) and
+  IQ1_S/IQ1_M (1.5–1.75 bpw).
+- **Ollama TQ support: YES.** Ollama main and release v0.34.3-rc1 both pin
+  llama.cpp b10969; at that revision upstream `ggml/include/ggml.h`
+  defines `GGML_TYPE_TQ1_0` and `GGML_TYPE_TQ2_0` (verified 2026-09-21
+  via raw file fetch), so Ollama loads TQ1_0/TQ2_0 GGUFs. Caveat: type
+  support only — the Metal kernel/perf path for ternary quants is
+  unverified (see backlog).
+- **HF survey 2026-09-21: no 70B-scale TQ1_0/TQ2_0 GGUF exists.**
+  HF API search for TQ1_0/TQ2_0 returns only unrelated small repos and one
+  397B oddity; no 70B ternary file to evaluate.
+- **70B IQ1_M exists but fails the budget.** bartowski's Llama-3.1-70B,
+  Llama-3.3-70B, r1-1776-distill-llama-70b IQ1_M files all measure
+  **16.75 GB** (HF API tree sizes) vs the ~15.3 GB estimate — over the
+  10–11 GB usable budget even before macOS + KV cache. It cannot fit a
+  16 GB Mac, full stop.
+- **Quality would not save it anyway.** bartowski labels 70B IQ1_M
+  "Extremely low quality, *not* recommended."; mradermacher's i1-IQ1_M
+  (16.0 GB) is "mostly desperate"; an independent 20-model Llama-3-70B
+  comparison found IQ1_M/IQ1_S at 12–15/18 vs reference with degraded
+  instruction-following and coherence ("1-bit quantization doesn't seem
+  viable yet" for agentic use).
+- Net: even the best sub-2-bit dense-70B option (a) doesn't exist as a
+  file (TQ), (b) doesn't fit when it does exist (IQ1_M), and (c) loses
+  too much quality for an agent. Avenue C is now WATCH-only for future
+  ≤1.3-bpw GGUF quants or TQ files on smaller dense models (e.g. a ~50B
+  TQ1_0 ≈ 10.6 GB would land inside the budget).
 
 ### D. KV-cache compression — SUPPORTING
 - KV cache is small for 70B (~1.3 GB at 4k ctx fp16) but every GB counts.
@@ -316,8 +336,28 @@ measuring where quality actually breaks.
 - [x] Quant R&D: add a K-means (Lloyd) 2-bit baseline — the fair classical
       comparison the current naive int2 baseline lacks (landed 2026-09-20,
       `int2_kmeans`, 2.5 bpw; see result note above)
-- [ ] Check whether current Ollama release supports TQ1_0/TQ2_0 GGUFs
-- [ ] Survey HuggingFace for 70B IQ1_M / TQ1_0 GGUFs; record sizes + quality reports
+- [x] Check whether current Ollama release supports TQ1_0/TQ2_0 GGUFs —
+      ANSWERED YES 2026-09-21: Ollama main and v0.34.3-rc1 both pin
+      llama.cpp b10969, whose ggml.h defines GGML_TYPE_TQ1_0/TQ2_0
+      (verified via raw fetch). Type-level support confirmed; Metal
+      kernel/perf path for ternary quants unverified (see new item).
+- [x] Survey HuggingFace for 70B IQ1_M / TQ1_0 GGUFs; record sizes +
+      quality reports — SURVEYED 2026-09-21: no 70B-scale TQ1_0/TQ2_0
+      file exists on HF; 70B IQ1_M files exist (bartowski 3.1/3.3/r1-1776)
+      but measure 16.75 GB — over the 10–11 GB usable budget, cannot fit
+      a 16 GB Mac. Quality: bartowski "extremely low quality, not
+      recommended"; mradermacher i1-IQ1_M "mostly desperate";
+      independent 20-model test found IQ1_M at 12–15/18 with degraded
+      instruction-following. Avenue C reclassified WATCH-only.
+- [ ] Re-survey HF for 70B-class TQ1_0/TQ2_0 GGUFs when the ternary-quant
+      ecosystem matures (none exist as of 2026-09-21). If a file appears,
+      check its size against the 10–11 GB budget FIRST (a 70B TQ1_0 est.
+      ~14.9 GB would still not fit; a ~50B TQ1_0 ≈ 10.6 GB would) before
+      any quality evaluation.
+- [ ] Verify Ollama's Metal kernel path for TQ1_0/TQ2_0 quants on the Mac
+      (type support confirmed at llama.cpp b10969; whether ternary matmuls
+      take an optimized path or a slow fallback on Apple Silicon is
+      unknown) — needs Justin's Mac, low priority until a TQ file exists.
 - [ ] Set `OLLAMA_KV_CACHE_TYPE=q8_0` — NOTE 2026-09-21: Hearth talks to
       an already-running `ollama serve` over HTTP (see src/llm.py,
       run.sh); there is no launcher code to wire the env var into, it
