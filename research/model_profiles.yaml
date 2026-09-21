@@ -1,0 +1,65 @@
+# Candidate model profiles for the 70B quest
+# status: stable | experimental | watch | unavailable
+# est_gb: estimated weight size on disk/in RAM (excludes KV cache + OS)
+
+profiles:
+  - name: qwen3:8b
+    params_b: 8
+    quant: Q4_K_M
+    est_gb: 5.2
+    backend: ollama
+    status: stable
+    notes: Current Hearth default. The baseline everything else must beat.
+
+  - name: llama3.3-70b-IQ1_M
+    params_b: 70
+    quant: IQ1_M
+    est_gb: 15.3
+    backend: ollama
+    status: experimental
+    notes: >
+      ~1.75 bpw GGUF. Likely OOM on 16GB once macOS (~4-6GB) + KV cache are
+      counted, but worth measuring. Needs importance-matrix quant for best
+      quality. Check HF for available files and Ollama TQ/IQ1 support.
+
+  - name: llama3.3-70b-TQ1_0
+    params_b: 70
+    quant: TQ1_0
+    est_gb: 14.9
+    backend: ollama
+    status: watch
+    notes: >
+      Ternary quant (~1.69 bpw) in llama.cpp. Even tighter fit than IQ1_M.
+      Blocked on: Ollama shipping a llama.cpp build with TQ support, and
+      community 70B TQ1_0 GGUFs existing.
+
+  - name: bitnet-70b-1.58bit
+    params_b: 70
+    quant: ternary-1.58bit
+    est_gb: 13.8
+    backend: bitnet.cpp
+    status: unavailable
+    notes: >
+      The endgame: 70B trained from scratch in ternary. No well-trained
+      public weights exist yet (public max ~8-10B, low token counts).
+      Watch microsoft/BitNet and bitnet.cpp releases.
+
+  - name: qwen3.5-35b-a3b-oQ-2bit
+    params_b: 35
+    quant: oQ-mixed-2bit
+    est_gb: 8.8
+    backend: mlx
+    status: experimental
+    notes: >
+      35B MoE, 3B active. Data-driven mixed precision: 64% MMLU at 2-bit vs
+      14% naive. Fits comfortably. Requires the future MLX backend.
+
+  - name: qwen3-30b-a3b-Q3_K_M
+    params_b: 30
+    quant: Q3_K_M
+    est_gb: 13.0
+    backend: ollama
+    status: experimental
+    notes: >
+      30B MoE GGUF fallback if MLX backend isn't ready. Tight but plausible.
+      Quality at Q3 needs verification for tool-calling reliability.
