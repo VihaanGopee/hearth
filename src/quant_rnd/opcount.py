@@ -18,6 +18,12 @@ two layers:
    the histogram trick real kernels use (one add per weight into a
    per-centroid bin, then a few ops per group).
 
+3. PREFILL ROOFLINE (prefill_roofline_tps). Prefill reuses every weight
+   `prompt_len` times, so arithmetic intensity grows with prompt length
+   and the regime flips from bandwidth-bound (decode) to compute-bound.
+   In that regime the ternary op-count advantage stops being second-order
+   and sets the ceiling ratio directly.
+
 Honest limits, stated up front:
 - This is a MODEL, not a benchmark. It predicts ceilings and op ratios;
   real kernels add dequant overhead, thread sync, and paging effects, and
@@ -82,6 +88,74 @@ def is_bandwidth_bound(flops_per_byte: float, peak_flops: float,
     balance (peak_flops / bandwidth), i.e. memory bandwidth -- not ALU
     throughput -- sets the speed limit."""
     return flops_per_byte < peak_flops / (bandwidth_gbs * 1e9)
+
+
+# --- prefill (compute-bound) roofline ---------------------------------------
+# Prefill streams the weights ONCE for the whole prompt while every weight
+# is reused prompt_len times, so arithmetic intensity ~= prompt_len times
+# the decode intensity and the regime flips to compute-bound. Attention's
+# O(L^2) term is ignored (under ~5% of matmul FLOPs at 4k for a 70B-shaped
+# model); it matters at very long context and is a known under-count there.
+
+# Activation traffic per token per layer, in units of d_model elements:
+# read input + write output + FFN intermediate traffic. This is an
+# ESTIMATE (real kernels fuse and re-tile); it only needs to be roughly
+# right because the regime verdict at 4k is compute-bound by 100x+.
+_PREFILL_ACT_TRAFFIC_ELEMS = 6.0
+
+
+def prefill_roofline_tps(n_params: float, bpw: float, opcount: dict,
+                         prompt_len: int, bandwidth_gbs: float,
+                         peak_flops: float, efficiency: float = 1.0,
+                         n_layers: int = 80, d_model: int = 8192,
+                         n_kv_heads: int = 8, head_dim: int = 128,
+                         bytes_per_elem: int = 2) -> dict:
+    """Optimistic prefill ceiling in tok/s for one prompt of prompt_len.
+
+    Model: weights are streamed once (weight_bytes), activations move an
+    estimated 6*d_model elements per token per layer, and the KV write for
+    the prompt is kv_cache_bytes(ctx=prompt_len). FLOPs are counted as
+    adds + muls per weight (same convention as scheme_report; lookups are
+    not FLOPs). Ceiling = prompt_len / max(bytes/bandwidth, flops/peak).
+
+    peak_flops is an explicit argument (no baked-in constant): pass the
+    published peak for the engine you model, e.g. the Apple-published
+    5.2 TFLOPS FP32 for the M1 Pro GPU.
+
+    Honest caveats: adds are counted as 1 FLOP against an FMA-counted
+    peak, so this is CONSERVATIVE for add-dominated ternary kernels --
+    on FMA hardware an add-only kernel can approach 2x this ceiling, but
+    that headroom is stated, not folded in. Real kernels land below the
+    ceiling (efficiency < 1); this is a ratio tool, not a tok/s claim.
+    """
+    if not isinstance(prompt_len, (int, np.integer)) or prompt_len < 1:
+        raise ValueError("prompt_len must be a positive integer")
+    if bandwidth_gbs <= 0:
+        raise ValueError("bandwidth_gbs must be positive")
+    if peak_flops <= 0:
+        raise ValueError("peak_flops must be positive")
+    if not 0.0 < efficiency <= 1.0:
+        raise ValueError("efficiency must be in (0, 1]")
+    flops_per_token = n_params * (opcount["adds"] + opcount["muls"])
+    total_flops = flops_per_token * prompt_len
+    weight_B = weight_bytes(n_params, bpw)
+    act_B = (prompt_len * n_layers * d_model * bytes_per_elem
+             * _PREFILL_ACT_TRAFFIC_ELEMS)
+    kv_write_B = kv_cache_bytes(n_layers=n_layers, n_kv_heads=n_kv_heads,
+                                head_dim=head_dim, ctx=prompt_len,
+                                bytes_per_elem=bytes_per_elem)
+    total_B = weight_B + act_B + kv_write_B
+    arith_intensity = total_flops / total_B
+    t_compute = total_flops / peak_flops
+    t_bandwidth = total_B / (bandwidth_gbs * 1e9)
+    return {
+        "total_flops": total_flops,
+        "bytes_moved": total_B,
+        "arith_intensity_flops_per_byte": arith_intensity,
+        "bandwidth_bound": is_bandwidth_bound(arith_intensity, peak_flops,
+                                             bandwidth_gbs),
+        "ceil_tps": efficiency * prompt_len / max(t_compute, t_bandwidth),
+    }
 
 
 # --- per-weight op models ---------------------------------------------------

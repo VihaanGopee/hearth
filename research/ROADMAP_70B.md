@@ -178,9 +178,28 @@ measuring where quality actually breaks.
       decode tok/s on Justin's Mac for a ternary/TQ1_0 model vs a 2-bit
       codebook model at matched size; compare against the 1.3-1.4x
       ceiling ratio predicted by opcount.py (needs Justin's Mac)
-- [ ] Quant R&D: extend opcount.py with a prefill (compute-bound) roofline
-      — the regime where ternary's 3x equiv-adds advantage becomes the
-      first-order effect
+- [x] Quant R&D: extend opcount.py with a prefill (compute-bound) roofline
+      — landed 2026-09-21 as `prefill_roofline_tps` (91 tests green).
+      Verdict: the regime flip is real and the prediction holds. At L=1
+      (decode-like) both references are bandwidth-bound (AI 2.8 vs machine
+      balance 26 FLOP/byte); at L=512+ both are compute-bound (AI 100x+
+      balance) and the ceiling ratio is EXACTLY the FLOP-per-weight ratio:
+      **1.795x ternary_1step over int2_kmeans_q8** (peak/efficiency/length
+      all cancel). Conservative by construction: adds count as 1 FLOP
+      against an FMA-counted peak, so a real add-dominated ternary kernel
+      has up to ~2x headroom above this ceiling on FMA hardware — stated,
+      not folded in. Peak is an explicit argument (Apple-published 5.2
+      TFLOPS FP32 M1 Pro GPU used in tests); no baked-in constants.
+      Attention O(L^2) ignored (<5% at 4k) — a known under-count at long
+      context, see follow-up below.
+- [ ] Quant R&D: Mac-side validation of the prefill ceiling ratio —
+      measure prompt-processing tok/s on Justin's Mac for a ternary/TQ1_0
+      model vs a 2-bit codebook model at matched size; compare against the
+      1.79x ceiling ratio predicted by prefill_roofline_tps (needs
+      Justin's Mac)
+- [ ] Quant R&D: add the attention O(L^2) term to prefill_roofline_tps for
+      long context (32k+) — currently a documented under-count; at 128k
+      attention is no longer negligible vs the 70B matmuls
 - [ ] Quant R&D: if a candidate holds up on real perplexity, design the
       ggml CPU kernel (ternary add/sub path) + upstream write-up/PR
 - [x] Quant R&D: add a K-means (Lloyd) 2-bit baseline — the fair classical

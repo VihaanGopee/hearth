@@ -32,6 +32,7 @@ from src.quant_rnd.opcount import (
     is_bandwidth_bound,
     kv_cache_bytes,
     measured_sparsity,
+    prefill_roofline_tps,
     scheme_report,
     side_fractions,
     ternary_opcount,
@@ -492,6 +493,70 @@ class TestOpCount(unittest.TestCase):
         # than negative.
         sf_s = side_fractions(qd_s)
         self.assertGreater(sf_s["pos"], 2.0 * sf_s["neg"])
+
+    def test_prefill_roofline_regime_flip_and_ratio(self):
+        # Prefill roofline with the two adopted references: ternary_1step
+        # (fitted ternary, the practical encoder) vs int2_kmeans_q8 (the
+        # classical Lloyd reference), both at g128, seed 7. The roadmap
+        # predicts the ternary op advantage becomes first-order in the
+        # compute-bound prefill regime; this pins the regime flip and the
+        # ceiling ratio the model actually produces.
+        # peak_flops is explicit: Apple-published 5.2 TFLOPS FP32 for the
+        # M1 Pro GPU. The ratio assertions do not depend on its value
+        # (it cancels); the regime assertions hold for any plausible peak.
+        peak = 5.2e12
+        rng = np.random.default_rng(7)
+        w = synthetic_weights(rng, n_groups=64)
+        q1 = quantize_ternary_1step(w, group_size=128)
+        qk = quantize_int2_kmeans_q8(w, group_size=128)
+        oc_t = ternary_opcount(measured_sparsity(q1))
+        oc_k = codebook_opcount(group_size=128, method="histogram")
+        kw = dict(n_params=N_PARAMS_70B, bandwidth_gbs=M1_PRO_MEM_BW_GBS,
+                  peak_flops=peak)
+        # L=1 is decode-like: arithmetic intensity ~3 FLOP/byte, far below
+        # the machine balance (~26) -> bandwidth-bound for both.
+        p1_t = prefill_roofline_tps(bpw=q1.bpw, opcount=oc_t, prompt_len=1,
+                                    **kw)
+        p1_k = prefill_roofline_tps(bpw=qk.bpw, opcount=oc_k, prompt_len=1,
+                                    **kw)
+        self.assertTrue(p1_t["bandwidth_bound"])
+        self.assertTrue(p1_k["bandwidth_bound"])
+        # L=4096 flips the regime: every weight is reused 4096x, so AI is
+        # ~100x the machine balance -> compute-bound for both.
+        p4_t = prefill_roofline_tps(bpw=q1.bpw, opcount=oc_t,
+                                    prompt_len=4096, **kw)
+        p4_k = prefill_roofline_tps(bpw=qk.bpw, opcount=oc_k,
+                                    prompt_len=4096, **kw)
+        self.assertFalse(p4_t["bandwidth_bound"])
+        self.assertFalse(p4_k["bandwidth_bound"])
+        self.assertGreater(
+            p4_t["arith_intensity_flops_per_byte"],
+            100 * peak / (M1_PRO_MEM_BW_GBS * 1e9))
+        # Compute-bound -> the ceiling ratio is exactly the FLOP-per-weight
+        # ratio (peak, efficiency and prompt_len all cancel). Measured on
+        # seed 7 this is ~1.79x: ternary's add/skip MAC vs the codebook
+        # histogram MAC. Conservative: adds count as 1 FLOP against an
+        # FMA-counted peak, so a real add-dominated ternary kernel has up
+        # to ~2x headroom above this ceiling on FMA hardware.
+        f_t = oc_t["adds"] + oc_t["muls"]
+        f_k = oc_k["adds"] + oc_k["muls"]
+        ratio = p4_t["ceil_tps"] / p4_k["ceil_tps"]
+        self.assertAlmostEqual(ratio, f_k / f_t, delta=1e-6)
+        self.assertGreater(ratio, 1.5)
+        # Sanity: the compute-bound ceiling reduces to peak/flops_per_token.
+        self.assertAlmostEqual(p4_t["ceil_tps"], peak / (N_PARAMS_70B * f_t),
+                               delta=1.0)
+        # Input validation.
+        with self.assertRaises(ValueError):
+            prefill_roofline_tps(n_params=N_PARAMS_70B, bpw=q1.bpw,
+                                 opcount=oc_t, prompt_len=0,
+                                 bandwidth_gbs=M1_PRO_MEM_BW_GBS,
+                                 peak_flops=peak)
+        with self.assertRaises(ValueError):
+            prefill_roofline_tps(n_params=N_PARAMS_70B, bpw=q1.bpw,
+                                 opcount=oc_t, prompt_len=8,
+                                 bandwidth_gbs=M1_PRO_MEM_BW_GBS,
+                                 peak_flops=0.0)
 
 
 class TestTernaryLloyd(unittest.TestCase):
