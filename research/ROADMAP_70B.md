@@ -188,11 +188,17 @@ measuring where quality actually breaks.
       perplexity gradient prefers the smaller group size: more
       per-group codebook fidelity beats the 0.19 bpw rate saving. The
       OBQ anchor is therefore **795.96 @ g128 (2.375 bpw)**.
-- [ ] Quant R&D: is the 795 ppl at 2.375 bpw limited by embeddings/LN?
-      quantize_model currently passes wte, pos embeddings, biases, LN
-      through in fp32 — run an ablation leaving them fp32 vs also
-      quantizing (separate backlog item: embedding-table quantization
-      probe covers wte specifically).
+- [x] Quant R&D: is the 795 ppl at 2.375 bpw limited by embeddings/LN?
+      ANSWERED NO 2026-09-21 — `ppl.py --quantize-embeddings` landed
+      (quantizes wte+wpe with the same scheme; biases/LN stay fp32; 145
+      tests green). int2_kmeans_q8 g128 on text1 with embeddings
+      quantized: **ppl 1.3e14 @ 2.375 bpw** vs 795.96 with fp32
+      embeddings. Total collapse (wte is the tied lm_head) — the fp32
+      passthrough is load-bearing, not a bottleneck. The fidelity problem
+      is in the LINEAR weights; error-compensation (OBQ-style) stays the
+      right next thread, applied to linears only.
+      Follow-up: wte-vs-wpe split not yet run (one ~11 min run each) —
+      folded into the embedding-table probe item below.
 - [ ] Quant R&D: OBQ/GPTQ-style second-order correction prototype — the
       honest next fidelity step now that pure group-wise is exhausted on
       both SQNR and perplexity. Start with per-group Hessian-diagonal
@@ -229,7 +235,11 @@ measuring where quality actually breaks.
 - [ ] Quant R&D: add embedding-table (wte) quantization to the real-weight
       probe — currently excluded by name; embedding rows have a very
       different distribution and are the largest single tensor in small
-      models.
+      models. NOTE 2026-09-21: the ppl ablation above (wte+wpe at 2-bit
+      group-wise → 1.3e14 collapse) says naive low-bit embedding
+      quantization is catastrophic — the interesting probe is now
+      higher-precision (q8/q4) or per-row-scaled embedding schemes, plus
+      the wte-vs-wpe split the ablation skipped.
 - [x] Quant R&D: sweep outlier_frac / n_outliers for the Pareto frontier
       (SQNR vs bpw) — landed 2026-09-20 as `src/quant_rnd/sweep.py`
       (seed 7). Frontier: ternary family below ~2.06 bpw (ternary_uniform
@@ -308,7 +318,13 @@ measuring where quality actually breaks.
       `int2_kmeans`, 2.5 bpw; see result note above)
 - [ ] Check whether current Ollama release supports TQ1_0/TQ2_0 GGUFs
 - [ ] Survey HuggingFace for 70B IQ1_M / TQ1_0 GGUFs; record sizes + quality reports
-- [ ] Set `OLLAMA_KV_CACHE_TYPE=q8_0` in run.sh and document
+- [ ] Set `OLLAMA_KV_CACHE_TYPE=q8_0` — NOTE 2026-09-21: Hearth talks to
+      an already-running `ollama serve` over HTTP (see src/llm.py,
+      run.sh); there is no launcher code to wire the env var into, it
+      belongs in the *Mac's* `ollama serve` environment (e.g.
+      `launchctl setenv` / the plist that starts Ollama). When Justin
+      validates on the Mac: export it before starting Ollama and document
+      measured KV savings; nothing to commit here beyond this note.
 - [ ] Speculative decoding support in the llamacpp backend (draft + target model)
 - [ ] Model cascade: small fast model by default, escalate hard queries to the big model
 - [ ] Prototype MLX backend (mac-only; can't be tested on Linux — needs Justin's Mac)

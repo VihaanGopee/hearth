@@ -1288,6 +1288,7 @@ class TestGPT2RealWeights(unittest.TestCase):
 
 from src.quant_rnd.ppl import (
     DEFAULT_SWEEP,
+    is_embedding,
     parse_args as ppl_parse_args,
     perplexity_of,
     quantize_model,
@@ -1374,6 +1375,43 @@ class TestQuantizeModel(unittest.TestCase):
             self.assertIn(s, DEFAULT_SWEEP)
         for s in ("int2_kmeans", "int2_kmeans_q8"):
             self.assertNotIn(s, DEFAULT_SWEEP)
+
+    def test_is_embedding_markers(self):
+        self.assertTrue(is_embedding("transformer.wte.weight"))
+        self.assertTrue(is_embedding("transformer.wpe.weight"))
+        self.assertTrue(is_embedding("wte.weight"))
+        self.assertFalse(is_embedding("h.0.attn.c_attn.weight"))
+        self.assertFalse(is_embedding("h.0.mlp.c_fc.bias"))
+        self.assertFalse(is_embedding("h.0.ln_1.weight"))
+
+    def test_quantize_embeddings_flag(self):
+        # Ablation protocol: flag ON quantizes wte with the same scheme,
+        # biases and LayerNorm still pass through fp32.
+        fake = self._fake_dict()
+        out, bpw = quantize_model(fake, "int2_symmetric", group_size=32,
+                                  quantize_embeddings=True)
+        self.assertFalse(
+            np.allclose(out["wte.weight"], fake["wte.weight"]),
+            "wte must be quantized when the flag is on")
+        self.assertEqual(out["wte.weight"].shape, fake["wte.weight"].shape)
+        for k in ("h.0.mlp.c_fc.bias", "h.0.ln_1.weight"):
+            np.testing.assert_array_equal(out[k], fake[k])
+        # bpw bookkeeping is unaffected: same scheme, same group size
+        _, bpw_off = quantize_model(fake, "int2_symmetric", group_size=32)
+        self.assertEqual(bpw, bpw_off)
+
+    def test_quantize_embeddings_flag_default_off(self):
+        # Default behavior is unchanged: wte stays fp32 (the weight-only
+        # protocol the published anchors use).
+        fake = self._fake_dict()
+        out, _ = quantize_model(fake, "int2_symmetric", group_size=32)
+        np.testing.assert_array_equal(out["wte.weight"], fake["wte.weight"])
+
+    def test_cli_quantize_embeddings_flag(self):
+        args = ppl_parse_args(["m.safetensors"])
+        self.assertFalse(args.quantize_embeddings)
+        args = ppl_parse_args(["m.safetensors", "--quantize-embeddings"])
+        self.assertTrue(args.quantize_embeddings)
 
 
 @unittest.skipUnless(os.path.exists(GPT2_WEIGHTS), "gpt2 weights not present")

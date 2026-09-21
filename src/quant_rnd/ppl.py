@@ -7,10 +7,11 @@ on research/data/eval_text.txt against the 53.50 fp32 reference
 (see research/log/2026-09-21.md for the 2a session).
 
 Scope notes (honest):
-- Embeddings (wte, which is also the tied lm_head), position embeddings,
-  biases, and LayerNorm weights/biases stay fp32. This is the standard
-  weight-only quantization protocol; embedding-table quantization is a
-  separate backlog item.
+- By default, embeddings (wte, which is also the tied lm_head), position
+  embeddings, biases, and LayerNorm weights/biases stay fp32. This is the
+  standard weight-only quantization protocol; the `--quantize-embeddings`
+  flag runs the ablation that also quantizes the embedding tables
+  (biases/LN still stay fp32).
 - Every scheme is evaluated at group_size=128 with its default kwargs
   (e.g. ternary_1step_ds keeps n_iter=1), matching the bpw bookkeeping
   of the SQNR probes. Schemes whose quantization is too slow for a
@@ -32,6 +33,17 @@ from .gpt2_tokenizer import GPT2Tokenizer
 from .realweights import read_safetensors, linear_weight_tensors
 from .schemes import GROUP_SIZE, SCHEMES
 
+# Mirrors the exclusion list in realweights.linear_weight_tensors: tensors
+# whose name matches one of these markers are the embedding tables that
+# the weight-only protocol normally leaves in fp32.
+EMBEDDING_MARKERS = ("embed", "wte", "wpe")
+
+
+def is_embedding(name: str) -> bool:
+    low = name.lower()
+    return any(m in low for m in EMBEDDING_MARKERS)
+
+
 # Schemes cheap enough to run end-to-end inside one session on this VM
 # (full-model quantization + one ~40 s forward each). The Lloyd k-means
 # family is excluded here for speed (see module docstring) and runs as a
@@ -49,7 +61,8 @@ DEFAULT_SWEEP = [
 
 def quantize_model(tensors: dict, scheme_name: str,
                    group_size: int = GROUP_SIZE,
-                   sample_weights: dict | None = None) -> tuple:
+                   sample_weights: dict | None = None,
+                   quantize_embeddings: bool = False) -> tuple:
     """Quantize + reconstruct every linear weight with `scheme_name`.
 
     Returns (weights, bpw): a new {name: float32 ndarray} dict with the
@@ -57,6 +70,13 @@ def quantize_model(tensors: dict, scheme_name: str,
     linear_weight_tensors selects) are quantized group-wise over the flat
     array and reconstructed, everything else passes through as a float32
     copy. The input dict is not modified.
+
+    `quantize_embeddings`: also quantize the embedding tables (wte, wpe,
+    anything matching EMBEDDING_MARKERS) with the same scheme. Biases and
+    LayerNorm scales stay fp32 regardless — the ablation targets the
+    weight tables only, and per the roadmap item this is the protocol
+    variant being compared against the fp32-embedding reference. bpw is
+    unchanged by the flag (same scheme, same group size).
 
     `sample_weights`: optional {tensor_name: flat per-weight importance}
     (see fisher.per_weight_importance). It is passed as `sample_weight=`
@@ -70,11 +90,14 @@ def quantize_model(tensors: dict, scheme_name: str,
     fn = SCHEMES[scheme_name]
     takes_weight = "sample_weight" in inspect.signature(fn).parameters
     linear = set(linear_weight_tensors(tensors))
+    targets = set(linear)
+    if quantize_embeddings:
+        targets |= {n for n in tensors if is_embedding(n)}
     out = {}
     bpw = None
     for name, t in tensors.items():
         t32 = np.ascontiguousarray(t, dtype=np.float32)
-        if name in linear:
+        if name in targets:
             kw = {}
             if (sample_weights is not None and takes_weight
                     and name in sample_weights):
@@ -94,13 +117,15 @@ def perplexity_of(tensors: dict, token_ids) -> float:
 
 def run_sweep(tensors: dict, token_ids, scheme_names: list,
               group_size: int = GROUP_SIZE,
-              sample_weights: dict | None = None) -> list:
+              sample_weights: dict | None = None,
+              quantize_embeddings: bool = False) -> list:
     """Quantize + forward per scheme; results sorted by perplexity asc."""
     results = []
     for name in scheme_names:
         t0 = time.time()
         qw, bpw = quantize_model(tensors, name, group_size,
-                                 sample_weights=sample_weights)
+                                 sample_weights=sample_weights,
+                                 quantize_embeddings=quantize_embeddings)
         ppl = perplexity_of(qw, token_ids)
         dt = time.time() - t0
         results.append({"scheme": name, "ppl": ppl, "bpw": bpw,
@@ -132,6 +157,12 @@ def parse_args(argv: list | None = None) -> argparse.Namespace:
                          "energy from one fp32 forward on the eval text); "
                          "only schemes whose encoder accepts sample_weight "
                          "(currently int2_kmeans_q8) are affected")
+    ap.add_argument("--quantize-embeddings", action="store_true",
+                    help="also quantize the embedding tables (wte, wpe) "
+                         "with the same scheme; biases and LayerNorm stay "
+                         "fp32. Ablation vs the default weight-only "
+                         "protocol (see roadmap: is the 795 anchor limited "
+                         "by the fp32 passthrough parts?)")
     return ap.parse_args(argv)
 
 
@@ -141,6 +172,9 @@ def main() -> None:
     mats = linear_weight_tensors(tensors)
     print(f"{len(mats)} linear matrices quantized, group size "
           f"{args.group_size}")
+    if args.quantize_embeddings:
+        print("quantize_embeddings ON: embedding tables (wte, wpe) also "
+              "quantized with the same scheme; biases/LN stay fp32")
     with open(args.eval_text) as f:
         text = f.read()
     ids = GPT2Tokenizer(args.tokenizer_dir).encode(text)
@@ -155,7 +189,8 @@ def main() -> None:
         print("fisher weighting on; applies to schemes accepting "
               "sample_weight (int2_kmeans_q8)", flush=True)
     results = run_sweep(tensors, ids, scheme_names, args.group_size,
-                        sample_weights=sample_weights)
+                        sample_weights=sample_weights,
+                        quantize_embeddings=args.quantize_embeddings)
     print_report(results)
 
 
