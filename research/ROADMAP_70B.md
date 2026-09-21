@@ -242,11 +242,22 @@ measuring where quality actually breaks.
       caught: an unregistered dual-scheme name silently mis-decodes in
       reconstruct() via the single-scale fallback — the
       _DUAL_SCALE_SCHEMES registration is load-bearing for correctness.)
-- [ ] Quant R&D: re-run the opcount energy/speed comparison with the
+- [x] Quant R&D: re-run the opcount energy/speed comparison with the
       dual fitted reference (`ternary_1step_ds` at n_iter=2, measured
-      zero-rate per side) — the current numbers use symmetric 1-step's
-      0.41 zero-rate; dual scales change sparsity and the per-side op
-      profile slightly.
+      zero-rate per side) — LANDED 2026-09-21 as
+      `test_dual_fitted_ternary_opcount_reference` (+ `side_fractions()`
+      in opcount.py; 90 tests green). Verdict: figures barely move, as
+      expected. Decode ceiling ratio 1.272x vs symmetric 1-step's 1.357x
+      (lower because the dual reference carries 1.835 vs 1.710 bpw —
+      byte-driven); energy-proxy ratio 3.53x clean / 3.40x skewed vs
+      symmetric's 3.52x. Dual zero-rates: 0.441 clean, 0.418 skew 0.5;
+      per-side split on skewed tensor pos=0.415 / neg=0.168 (the op-profile
+      shift the re-run was meant to capture). n_scales=2 costs only
+      ~0.016 muls/weight — genuinely "slight".
+- [ ] Quant R&D: when the tiny-model perplexity run selects a real group
+      size (128 vs 256), re-run the opcount table at that group size —
+      the current decode ratios (1.36x sym / 1.27x dual) are computed
+      against int2_kmeans_q8 at g128; g256 dilutes them (1.177x dual).
 
 ## Ground rules for this research track
 

@@ -140,6 +140,26 @@ def measured_sparsity(result) -> float:
     return float(np.mean(result.codes == 0))
 
 
+def side_fractions(result) -> dict:
+    """Per-code fractions of a ternary-family QuantResult.
+
+    A dual-scale sparse kernel accumulates the two nonzero sides under
+    separate scales (y += s_pos*sum(x|code=+1) + s_neg*sum(x|code=-1)), so
+    the honest op input is the per-side profile, not just the total zero
+    rate. Returns {"pos", "neg", "zero"} fractions that sum to 1.0; on a
+    skewed tensor the pos/neg split visibly differs (the single-scale
+    case keeps it symmetric), which is exactly the op-profile shift the
+    dual opcount re-run needs to measure.
+    """
+    codes = np.asarray(result.codes)
+    if not set(np.unique(codes)) <= {-1, 0, 1}:
+        raise ValueError("side_fractions needs ternary codes in {-1, 0, 1}")
+    n = codes.size
+    return {"pos": float(np.sum(codes == 1) / n),
+            "neg": float(np.sum(codes == -1) / n),
+            "zero": float(np.sum(codes == 0) / n)}
+
+
 # --- scheme-level report ----------------------------------------------------
 
 def scheme_report(name: str, *, bpw: float, group_size: int = 128,

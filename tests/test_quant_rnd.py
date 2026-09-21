@@ -33,6 +33,7 @@ from src.quant_rnd.opcount import (
     kv_cache_bytes,
     measured_sparsity,
     scheme_report,
+    side_fractions,
     ternary_opcount,
     weight_bytes,
 )
@@ -432,6 +433,65 @@ class TestOpCount(unittest.TestCase):
         # driven by a real, measured quantity, not an assumption.
         zu = float(np.mean(quantize_ternary_uniform(w).codes == 0))
         self.assertGreater(measured_sparsity(q1), zu)
+
+    def test_side_fractions(self):
+        # Unit coverage for the dual op-count input: fractions sum to 1,
+        # zero matches measured_sparsity, and non-ternary codes are
+        # rejected instead of silently mis-measured.
+        rng = np.random.default_rng(7)
+        w = synthetic_weights(rng, n_groups=64)
+        qd = quantize_ternary_1step_ds(w, group_size=128, n_iter=2)
+        sf = side_fractions(qd)
+        self.assertAlmostEqual(sf["pos"] + sf["neg"] + sf["zero"], 1.0)
+        self.assertAlmostEqual(sf["zero"], measured_sparsity(qd))
+        self.assertGreater(sf["pos"], 0.0)
+        self.assertGreater(sf["neg"], 0.0)
+        with self.assertRaises(ValueError):
+            side_fractions(quantize_int2_kmeans(w, group_size=128))
+
+    def test_dual_fitted_ternary_opcount_reference(self):
+        # Opcount re-run with the DUAL fitted reference (ternary_1step_ds,
+        # n_iter=2 - the practical dual encoder from the 1-step_ds session)
+        # instead of the symmetric 1-step. The dual refit stores two fp16
+        # scales per group (1.835 bpw at g128) and adapts each side's
+        # threshold independently, so both the zero-rate and the
+        # pos/neg split are measured per scheme, not borrowed from the
+        # symmetric run. Measured seed 7, 64 groups:
+        #   clean:  zero=0.441 (vs symmetric 1-step's 0.41)
+        #   skew 0.5: pos=0.415 / neg=0.168 - visibly asymmetric,
+        #           which is exactly the per-side op profile shift the
+        #           dual re-run was meant to capture.
+        # n_scales=2 (not 1) feeds the extra scale multiply into the
+        # energy proxy; it is ~0.016 muls/weight - genuinely "slight".
+        rng = np.random.default_rng(7)
+        w = synthetic_weights(rng, n_groups=64)
+        w_skew = w + 0.5
+        qd = quantize_ternary_1step_ds(w, group_size=128, n_iter=2)
+        qd_s = quantize_ternary_1step_ds(w_skew, group_size=128, n_iter=2)
+        qk = quantize_int2_kmeans_q8(w, group_size=128)
+        self.assertAlmostEqual(qd.bpw, math.log2(3) + 32 / 128, places=6)
+        for q in (qd, qd_s):
+            sf = side_fractions(q)
+            rd = scheme_report("ternary_1step_ds", bpw=q.bpw, kind="ternary",
+                               sparsity=sf["zero"], n_scales=2,
+                               group_size=128)
+            rk = scheme_report("int2_kmeans_q8", bpw=qk.bpw, kind="codebook",
+                               method="histogram")
+            # Decode ceiling is byte-driven: lower than symmetric 1-step's
+            # 1.357x because the dual reference carries 1.835 vs 1.710 bpw.
+            self.assertAlmostEqual(rd["roofline_tps"] / rk["roofline_tps"],
+                                   1.272, delta=0.01)
+            # Energy-proxy advantage holds at >= 3.3x on both clean and
+            # skewed tensors (measured 3.53 clean / 3.40 skewed), and the
+            # dual's extra scale multiply is real but negligible.
+            self.assertGreaterEqual(rk["equiv_adds_per_w"]
+                                    / rd["equiv_adds_per_w"], 3.3)
+            self.assertAlmostEqual(rd["muls_per_w"], 2 / 128)
+        # The per-side split the single-scale model cannot express: on a
+        # skewed tensor the dual refit keeps ~2.5x more weights positive
+        # than negative.
+        sf_s = side_fractions(qd_s)
+        self.assertGreater(sf_s["pos"], 2.0 * sf_s["neg"])
 
 
 class TestTernaryLloyd(unittest.TestCase):
