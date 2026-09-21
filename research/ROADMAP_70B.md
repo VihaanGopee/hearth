@@ -112,18 +112,47 @@ measuring where quality actually breaks.
       on synthetic SQNR, Lloyd k-means owns the ~2.4 bpw Pareto point.
 - [ ] Quant R&D: pivot the candidate story — since Lloyd beats our
       candidates on SQNR, the case for ternary schemes must rest on
-      inference cost (add/sub vs multiplies), not fidelity. Next: either
-      (a) find a scheme that beats k-means below ~2.2 bpw on SQNR, or
-      (b) quantify the ternary compute advantage and aim the ggml kernel
-      work there. Don't chase SQNR parity with Lloyd.
+      inference cost (add/sub vs multiplies), not fidelity. Part (a) is
+      now ANSWERED NO (2026-09-20 Pareto sweep, `src/quant_rnd/sweep.py`):
+      Lloyd owns every bitrate ≥2.19 bpw — `int2_kmeans_q8` at group 256
+      scores **9.12 dB @ 2.188 bpw** vs ternary_outlier's 6.73 @ 2.060 —
+      on both clean and skewed tensors, and Lloyd is skew-invariant. Don't
+      chase SQNR parity with Lloyd. Part (b) is now the main thread:
+      quantify the ternary compute advantage and aim the ggml kernel
+      work there.
 - [ ] Quant R&D: when the real-tiny-model perplexity run happens, check
       whether the synthetic ranking (k-means > ternary_outlier >
       dual_scale_ternary) reproduces on real weights — the ranking, not
       the absolute dB, is what transfers.
 - [ ] Quant R&D: validate candidates on a real tiny model (60–130M params,
       CPU-friendly) — real perplexity vs the synthetic SQNR ranking
-- [ ] Quant R&D: sweep outlier_frac / n_outliers for the Pareto frontier
-      (SQNR vs bpw) before picking a kernel target
+- [x] Quant R&D: sweep outlier_frac / n_outliers for the Pareto frontier
+      (SQNR vs bpw) — landed 2026-09-20 as `src/quant_rnd/sweep.py`
+      (seed 7). Frontier: ternary family below ~2.06 bpw (ternary_uniform
+      5.56 dB @ 1.710 → DST 5.59 @ 1.835 → T1+out n=1 6.41 @ 1.885 →
+      n=2 6.73 @ 2.060), then classical Lloyd takes over (q8 g=256:
+      9.12 @ 2.188; q8 g=128: 9.68 @ 2.375; kmeans g=64: 10.09 @ 3.000).
+      Skewed run (mean shift 0.5): Lloyd unchanged (skew-invariant), DST
+      keeps a small edge over symmetric ternary (5.06 vs 4.76 dB).
+      Verdict: no ternary scheme beats Lloyd below ~2.2 bpw on synthetic
+      SQNR — the fidelity path is exhausted; pivot to compute (see above).
+      Side fix the sweep exposed: `QuantResult.reconstruct()` hard-coded
+      GROUP_SIZE=128 and crashed on other group sizes; group_size is now
+      stored on the result (46 tests green).
+- [ ] Quant R&D: candidate C — "Lloyd-fit ternary": 1-D Lloyd with the
+      codebook constrained to ternary {-s,0,+s} (or dual-scale
+      {-s_neg,0,+s_pos}). The sweep suggests k-means *fitting* is doing
+      the heavy lifting, not the codebook size; this tests whether Lloyd
+      fitting rescues ternary at 1.71–1.84 bpw. If it beats DST/T1+out
+      there, it becomes the new ternary reference.
+- [ ] Quant R&D: adopt `int2_kmeans_q8` at group 256 (2.188 bpw) as the
+      reference baseline-to-beat for future candidate schemes — it
+      undercuts the old 2.375 bpw reference and matches our candidates'
+      bitrate band.
+- [ ] Quant R&D: op-count model of ternary matmul (add/sub per MAC) vs
+      int2 codebook-lookup + fp dequant-multiply, for the bandwidth-bound
+      Apple Silicon decode regime — the quantitative case for the ggml
+      ternary kernel the pivot now rests on.
 - [ ] Quant R&D: if a candidate holds up on real perplexity, design the
       ggml CPU kernel (ternary add/sub path) + upstream write-up/PR
 - [x] Quant R&D: add a K-means (Lloyd) 2-bit baseline — the fair classical

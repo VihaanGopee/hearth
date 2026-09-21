@@ -43,13 +43,14 @@ class QuantResult:
     codes: np.ndarray  # int8 codes, flat, same length as input
     scales: np.ndarray  # float32 per-group scale(s); shape (n_groups, n_scales)
     bpw: float  # effective bits/weight incl. all overhead
+    group_size: int = GROUP_SIZE  # group size used at quantize time
     _outlier_vals: np.ndarray = field(default=None, repr=False)
     _outlier_idx: np.ndarray = field(default=None, repr=False)
 
     def reconstruct(self) -> np.ndarray:
         """Dequantize back to float32, same shape as the input."""
         n = self.codes.shape[0]
-        g = GROUP_SIZE
+        g = self.group_size
         n_groups = (n + g - 1) // g
         out = np.zeros(n, dtype=np.float32)
         group_id = np.arange(n) // g
@@ -96,7 +97,8 @@ def quantize_ternary_uniform(w: np.ndarray, group_size: int = GROUP_SIZE) -> Qua
     codes = np.clip(np.round(wp / scales), -1, 1).astype(np.int8).ravel()[:n]
     bpw = TERNARY_PAYLOAD_BPW + _scale_overhead(1, group_size)
     return QuantResult("ternary_uniform", codes,
-                       scales.reshape(n_groups, 1), bpw)
+                       scales.reshape(n_groups, 1), bpw,
+                       group_size=group_size)
 
 
 def quantize_int2_symmetric(w: np.ndarray, group_size: int = GROUP_SIZE) -> QuantResult:
@@ -109,7 +111,8 @@ def quantize_int2_symmetric(w: np.ndarray, group_size: int = GROUP_SIZE) -> Quan
     # store doubled so codes are integers in {-3,-1,1,3}
     codes = (codes * 2).astype(np.int8).ravel()[:n]
     bpw = 2.0 + _scale_overhead(1, group_size)
-    res = QuantResult("int2_symmetric", codes, (s / 2).reshape(n_groups, 1), bpw)
+    res = QuantResult("int2_symmetric", codes, (s / 2).reshape(n_groups, 1),
+                      bpw, group_size=group_size)
     return res
 
 
@@ -157,7 +160,8 @@ def quantize_dual_scale_ternary(w: np.ndarray,
     codes = codes.ravel()[:n]
     bpw = TERNARY_PAYLOAD_BPW + _scale_overhead(2, group_size)
     scales = np.concatenate([s_pos, s_neg], axis=1)
-    return QuantResult("dual_scale_ternary", codes, scales, bpw)
+    return QuantResult("dual_scale_ternary", codes, scales, bpw,
+                       group_size=group_size)
 
 
 def quantize_ternary_outlier(w: np.ndarray, group_size: int = GROUP_SIZE,
@@ -232,7 +236,8 @@ def quantize_int2_kmeans(w: np.ndarray, group_size: int = GROUP_SIZE,
                    - centroids[:, None, :]).argmin(axis=2)
     codes = codes.astype(np.int8).ravel()[:n]
     bpw = 2.0 + _scale_overhead(4, group_size)
-    return QuantResult("int2_kmeans", codes, centroids, bpw)
+    return QuantResult("int2_kmeans", codes, centroids, bpw,
+                       group_size=group_size)
 
 
 def quantize_int2_kmeans_q8(w: np.ndarray, group_size: int = GROUP_SIZE,
@@ -260,7 +265,8 @@ def quantize_int2_kmeans_q8(w: np.ndarray, group_size: int = GROUP_SIZE,
     codes = np.abs(wp[:, :, None] - deq[:, None, :]).argmin(axis=2)
     codes = codes.astype(np.int8).ravel()[:n]
     bpw = 2.0 + 4 * 8 / group_size + _scale_overhead(1, group_size)
-    return QuantResult("int2_kmeans_q8", codes, deq, bpw)
+    return QuantResult("int2_kmeans_q8", codes, deq, bpw,
+                       group_size=group_size)
 
 
 SCHEMES = {

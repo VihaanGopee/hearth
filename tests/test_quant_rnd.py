@@ -18,6 +18,7 @@ from src.quant_rnd import (
     quantize_ternary_uniform,
 )
 from src.quant_rnd.bench import run_bench, sqnr_db, synthetic_weights
+from src.quant_rnd.sweep import CONFIGS, pareto_frontier, run_sweep
 
 
 def _mse(a, b):
@@ -206,6 +207,89 @@ class TestBench(unittest.TestCase):
     def test_sqnr_perfect_reconstruction(self):
         w = np.array([1.0, -2.0, 0.5], dtype=np.float32)
         self.assertEqual(sqnr_db(w, w), float("inf"))
+
+
+class TestSweep(unittest.TestCase):
+    def test_reconstruct_respects_nondefault_group_size(self):
+        # Regression: reconstruct() used to hard-code GROUP_SIZE=128 and
+        # crashed (IndexError) for any other group size.
+        rng = np.random.default_rng(42)
+        w = synthetic_weights(rng, n_groups=8)
+        for g in (64, 128, 256):
+            q = quantize_int2_kmeans_q8(w, group_size=g)
+            rec = q.reconstruct()
+            self.assertEqual(rec.shape, w.shape)
+            self.assertTrue(math.isfinite(sqnr_db(w, rec)))
+        # and the bpw accounting must match the group size
+        self.assertAlmostEqual(
+            quantize_int2_kmeans_q8(w, group_size=256).bpw,
+            2.0 + 32 / 256 + 16 / 256, places=9)
+
+    def test_pareto_frontier_picks_monotone_envelope(self):
+        pts = [
+            {"bpw": 1.7, "sqnr_db": 5.0},
+            {"bpw": 2.0, "sqnr_db": 4.0},   # dominated by the 1.7 point
+            {"bpw": 2.2, "sqnr_db": 6.0},   # frontier: new best
+            {"bpw": 2.4, "sqnr_db": 6.0},   # tie at higher bpw: not a new best
+            {"bpw": 2.6, "sqnr_db": 9.0},   # frontier
+        ]
+        f = pareto_frontier(pts)
+        self.assertEqual([(p["bpw"], p["sqnr_db"]) for p in f],
+                         [(1.7, 5.0), (2.2, 6.0), (2.6, 9.0)])
+
+    def test_sweep_is_deterministic(self):
+        a = run_sweep(seed=7, n_groups=16)
+        b = run_sweep(seed=7, n_groups=16)
+        self.assertEqual(a, b)
+
+    def test_sweep_covers_all_configs_and_marks_frontier(self):
+        res = run_sweep(seed=7, n_groups=16)
+        self.assertEqual(len(res), len(CONFIGS))
+        labels = [r["label"] for r in res]
+        self.assertIn("ternary_outlier n=2", labels)
+        self.assertIn("int2_kmeans_q8 g=128", labels)
+        self.assertIn("dual_scale_ternary", labels)
+        # sorted by ascending bpw
+        bpws = [r["bpw"] for r in res]
+        self.assertEqual(bpws, sorted(bpws))
+        # the global best-SQNR point is always on the frontier
+        best = max(res, key=lambda r: r["sqnr_db"])
+        self.assertTrue(best["on_frontier"])
+
+    def test_sweep_bpw_monotonic_in_outliers(self):
+        res = run_sweep(seed=7, n_groups=16)
+        by_label = {r["label"]: r for r in res}
+        for frac_lo, frac_hi in [("0.001", "0.005"), ("0.005", "0.01"),
+                                 ("0.01", "0.02")]:
+            self.assertLess(by_label[f"int2_outlier_retain f={frac_lo}"]["bpw"],
+                            by_label[f"int2_outlier_retain f={frac_hi}"]["bpw"])
+        for n_lo, n_hi in [(1, 2), (2, 4), (4, 8)]:
+            self.assertLess(by_label[f"ternary_outlier n={n_lo}"]["bpw"],
+                            by_label[f"ternary_outlier n={n_hi}"]["bpw"])
+        # smaller k-means groups cost more codebook overhead
+        self.assertLess(by_label["int2_kmeans_q8 g=256"]["bpw"],
+                        by_label["int2_kmeans_q8 g=128"]["bpw"])
+        self.assertLess(by_label["int2_kmeans_q8 g=128"]["bpw"],
+                        by_label["int2_kmeans_q8 g=64"]["bpw"])
+
+    def test_sweep_kmeans_reference_honest_bpw(self):
+        # The reference point the candidates must beat: q8 at g=128 is the
+        # advertised 2.375 bpw matched-bitrate baseline.
+        res = run_sweep(seed=7, n_groups=16)
+        by_label = {r["label"]: r for r in res}
+        ref = by_label["int2_kmeans_q8 g=128"]
+        self.assertAlmostEqual(ref["bpw"], 2.375, places=6)
+        self.assertTrue(math.isfinite(ref["sqnr_db"]))
+
+    def test_sweep_ternary_outlier_n2_matches_bench_bpw(self):
+        # The default ternary_outlier (n=2) swept point must agree with the
+        # unswept bench bpw: same tensor, same quantizer, same number.
+        bench = {r["scheme"]: r for r in run_bench(seed=7, n_groups=16)}
+        sweep = {r["label"]: r for r in run_sweep(seed=7, n_groups=16)}
+        self.assertAlmostEqual(sweep["ternary_outlier n=2"]["bpw"],
+                               bench["ternary_outlier"]["bpw"], places=9)
+        self.assertAlmostEqual(sweep["ternary_outlier n=2"]["sqnr_db"],
+                               bench["ternary_outlier"]["sqnr_db"], places=6)
 
 
 if __name__ == "__main__":
