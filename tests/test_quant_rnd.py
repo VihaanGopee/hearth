@@ -14,6 +14,8 @@ from src.quant_rnd import (
     quantize_int2_kmeans,
     quantize_int2_kmeans_q8,
     quantize_int2_symmetric,
+    quantize_ternary_lloyd,
+    quantize_ternary_lloyd_ds,
     quantize_ternary_outlier,
     quantize_ternary_uniform,
 )
@@ -45,7 +47,8 @@ class TestSchemes(unittest.TestCase):
 
     def test_registry_has_baselines_and_candidates(self):
         self.assertEqual(set(SCHEMES),
-                         {"ternary_uniform", "int2_symmetric", "int2_kmeans",
+                         {"ternary_uniform", "ternary_lloyd", "ternary_lloyd_ds",
+                          "int2_symmetric", "int2_kmeans",
                           "int2_kmeans_q8",
                           "int2_outlier_retain", "dual_scale_ternary",
                           "ternary_outlier"})
@@ -401,6 +404,89 @@ class TestOpCount(unittest.TestCase):
     def test_scheme_report_rejects_unknown_kind(self):
         with self.assertRaises(ValueError):
             scheme_report("x", bpw=2.0, kind="magic")
+
+
+class TestTernaryLloyd(unittest.TestCase):
+    """Candidate C: Lloyd with the codebook constrained to ternary."""
+
+    def setUp(self):
+        rng = np.random.default_rng(7)
+        self.w = synthetic_weights(rng, n_groups=64)
+
+    def test_codes_valid(self):
+        for fn in (quantize_ternary_lloyd, quantize_ternary_lloyd_ds):
+            q = fn(self.w)
+            self.assertTrue(set(np.unique(q.codes)) <= {-1, 0, 1},
+                            fn.__name__)
+
+    def test_bpw_matched_to_heuristic_twins(self):
+        # Same storage as ternary_uniform (1 fp16 scale) and
+        # dual_scale_ternary (2 fp16 scales): the fidelity comparison is at
+        # exactly matched bitrate.
+        ql = quantize_ternary_lloyd(self.w)
+        self.assertAlmostEqual(ql.bpw, math.log2(3) + 16 / 128, places=6)
+        self.assertAlmostEqual(
+            ql.bpw, quantize_ternary_uniform(self.w).bpw, places=9)
+        qd = quantize_ternary_lloyd_ds(self.w)
+        self.assertAlmostEqual(qd.bpw, math.log2(3) + 32 / 128, places=6)
+        self.assertAlmostEqual(
+            qd.bpw, quantize_dual_scale_ternary(self.w).bpw, places=9)
+
+    def test_deterministic(self):
+        for fn in (quantize_ternary_lloyd, quantize_ternary_lloyd_ds):
+            a, b = fn(self.w), fn(self.w)
+            self.assertTrue(np.array_equal(a.codes, b.codes), fn.__name__)
+            self.assertTrue(np.array_equal(a.scales, b.scales), fn.__name__)
+
+    def test_dual_scale_reconstruct_matches_scales(self):
+        q = quantize_ternary_lloyd_ds(self.w)
+        r = q.reconstruct()
+        g0 = q.scales[0]
+        c0 = q.codes[:128].astype(np.float32)
+        expected = np.where(c0 > 0, g0[0], np.where(c0 < 0, -g0[1], 0.0))
+        np.testing.assert_allclose(r[:128], expected, rtol=1e-6)
+
+    def test_lloyd_beats_heuristic_at_same_bitrate(self):
+        # The experiment this candidate was built to answer: does Lloyd
+        # *fitting* rescue ternary at matched bitrate? Seed 7 reproduces
+        # the bench numbers: +1.37 dB symmetric, +1.41 dB dual-scale.
+        sqnr_l = sqnr_db(self.w, quantize_ternary_lloyd(self.w).reconstruct())
+        sqnr_u = sqnr_db(self.w,
+                         quantize_ternary_uniform(self.w).reconstruct())
+        self.assertGreater(sqnr_l, sqnr_u + 1.0)
+        sqnr_d = sqnr_db(self.w,
+                         quantize_ternary_lloyd_ds(self.w).reconstruct())
+        sqnr_dst = sqnr_db(self.w,
+                           quantize_dual_scale_ternary(self.w).reconstruct())
+        self.assertGreater(sqnr_d, sqnr_dst + 1.0)
+
+    def test_dual_scale_lloyd_captures_skew(self):
+        # Asymmetric scales fit each side: on a skewed tensor the
+        # dual-scale Lloyd variant should beat the symmetric one.
+        rng = np.random.default_rng(1234)
+        n = 16 * 128
+        pos = np.abs(rng.standard_normal(n // 2)) * 2.0 + 0.5
+        neg = -np.abs(rng.standard_normal(n - n // 2)) * 0.1
+        w = rng.permutation(np.concatenate([pos, neg])).astype(np.float32)
+        sqnr_d = sqnr_db(w, quantize_ternary_lloyd_ds(w).reconstruct())
+        sqnr_l = sqnr_db(w, quantize_ternary_lloyd(w).reconstruct())
+        self.assertGreater(sqnr_d, sqnr_l)
+
+    def test_ternary_lloyd_beats_outlier_schemes_below_2bpw(self):
+        # Sweep result pinned: Lloyd-fit ternary owns the sub-2.06 bpw
+        # region, beating ternary_outlier n=2 at a lower bitrate.
+        ql = quantize_ternary_lloyd(self.w)
+        qo = quantize_ternary_outlier(self.w, n_outliers=2)
+        self.assertLess(ql.bpw, qo.bpw)
+        self.assertGreater(sqnr_db(self.w, ql.reconstruct()),
+                           sqnr_db(self.w, qo.reconstruct()))
+
+    def test_one_sided_group_no_nan(self):
+        w = np.abs(self.w)  # no negative weights anywhere
+        for fn in (quantize_ternary_lloyd, quantize_ternary_lloyd_ds):
+            q = fn(w)
+            r = q.reconstruct()
+            self.assertTrue(np.all(np.isfinite(r)), fn.__name__)
 
 
 if __name__ == "__main__":

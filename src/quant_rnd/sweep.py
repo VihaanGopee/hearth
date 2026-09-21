@@ -10,8 +10,9 @@ Swept configs:
 - int2_outlier_retain (baseline): outlier_frac in {0.001, 0.005, 0.01, 0.02}
 - int2_kmeans / int2_kmeans_q8 (classical baselines): group_size in
   {64, 128, 256} (smaller groups = more codebook overhead = higher bpw)
-- dual_scale_ternary (candidate A) and ternary_uniform: single points
-  (no sweepable hyperparameter).
+- dual_scale_ternary (candidate A), ternary_uniform, ternary_lloyd and
+  ternary_lloyd_ds (candidate C): single points (no sweepable
+  hyperparameter).
 
 Run: python3 -m src.quant_rnd.sweep [--seed N] [--groups G]
 """
@@ -22,7 +23,8 @@ import numpy as np
 from .bench import sqnr_db, synthetic_weights
 from .schemes import (GROUP_SIZE, quantize_dual_scale_ternary,
                       quantize_int2_kmeans, quantize_int2_kmeans_q8,
-                      quantize_int2_outlier_retain, quantize_ternary_outlier,
+                      quantize_int2_outlier_retain, quantize_ternary_lloyd,
+                      quantize_ternary_lloyd_ds, quantize_ternary_outlier,
                       quantize_ternary_uniform)
 
 # (label, weight-array -> QuantResult) configs, in sweep order.
@@ -47,6 +49,8 @@ for _g in (64, 128, 256):
         lambda w, g=_g: quantize_int2_kmeans(w, group_size=g),
     ))
 CONFIGS.append(("dual_scale_ternary", quantize_dual_scale_ternary))
+CONFIGS.append(("ternary_lloyd", quantize_ternary_lloyd))
+CONFIGS.append(("ternary_lloyd_ds", quantize_ternary_lloyd_ds))
 CONFIGS.append(("ternary_uniform", quantize_ternary_uniform))
 
 

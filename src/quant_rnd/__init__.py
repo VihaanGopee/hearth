@@ -16,6 +16,8 @@ Honest limits, stated up front:
 from .schemes import (
     QuantResult,
     quantize_ternary_uniform,
+    quantize_ternary_lloyd,
+    quantize_ternary_lloyd_ds,
     quantize_int2_symmetric,
     quantize_int2_kmeans,
     quantize_int2_kmeans_q8,
@@ -44,6 +46,8 @@ def __getattr__(name):
 __all__ = [
     "QuantResult",
     "quantize_ternary_uniform",
+    "quantize_ternary_lloyd",
+    "quantize_ternary_lloyd_ds",
     "quantize_int2_symmetric",
     "quantize_int2_kmeans",
     "quantize_int2_kmeans_q8",

@@ -24,6 +24,12 @@ Candidates (ours, to be validated):
 - ternary_outlier ("T1+out"): ternary base + the n largest-magnitude
   weights per group stored exactly in fp16 (with 8-bit indices). Tests
   whether ternary + sparse outliers beats plain int2 at matched bitrate.
+- ternary_lloyd / ternary_lloyd_ds ("Lloyd-fit ternary"): the sweep showed
+  Lloyd *fitting* is doing the heavy lifting, not the codebook size, so
+  this runs Lloyd with the codebook constrained to ternary {-s,0,+s}
+  (symmetric) or dual-scale ternary {-s_neg,0,+s_pos}. Same 1.710 /
+  1.835 bpw as ternary_uniform / DST, so the SQNR comparison against them
+  is at exactly matched bitrate and isolates the value of fitting.
 """
 from dataclasses import dataclass, field
 
@@ -58,7 +64,7 @@ class QuantResult:
             mask = group_id == gi
             c = self.codes[mask].astype(np.float32)
             s = self.scales[gi]
-            if self.name == "dual_scale_ternary":
+            if self.name in _DUAL_SCALE_SCHEMES:
                 rec = np.where(c > 0, s[0], np.where(c < 0, -s[1], 0.0))
             elif self.name in _CODEBOOK_SCHEMES:
                 # s holds the effective per-group codebook (fp16-fitted or
@@ -75,6 +81,10 @@ class QuantResult:
 # Schemes whose `scales` hold an effective per-group codebook that the
 # integer `codes` index into (rather than multiplicative scales).
 _CODEBOOK_SCHEMES = frozenset({"int2_kmeans", "int2_kmeans_q8"})
+
+# Schemes whose `scales` hold (s_pos, s_neg): code +1 decodes as s_pos,
+# code -1 as -s_neg.
+_DUAL_SCALE_SCHEMES = frozenset({"dual_scale_ternary", "ternary_lloyd_ds"})
 
 
 def _groups(w: np.ndarray, group_size: int = GROUP_SIZE):
@@ -269,8 +279,99 @@ def quantize_int2_kmeans_q8(w: np.ndarray, group_size: int = GROUP_SIZE,
                        group_size=group_size)
 
 
+def _ternary_lloyd_fit(g: np.ndarray, dual: bool,
+                       n_iter: int = 20) -> tuple:
+    """Constrained 1-D Lloyd for a ternary codebook.
+
+    Fits {-s, 0, +s} (or dual-scale {-s_neg, 0, +s_pos}) to one group by
+    alternating assignment (nearest of the three codebook values, i.e.
+    thresholds at +/-s/2) and refit: given the assignment, the optimal
+    symmetric s is the mean |x| over non-zero-assigned weights (L2
+    optimality), and the dual scales are the per-side conditional means.
+    Deterministic; no random restarts. Returns (s_pos, s_neg, codes).
+    """
+    g = g.astype(np.float64)
+    if dual:
+        pos = g[g > 0]
+        neg = g[g < 0]
+        s_pos = float(pos.mean()) if pos.size else 0.0
+        s_neg = float(-neg.mean()) if neg.size else 0.0
+    else:
+        s_pos = s_neg = float(np.mean(np.abs(g)))
+    for _ in range(n_iter):
+        a_pos = g > 0.5 * s_pos
+        a_neg = g < -0.5 * s_neg
+        new_pos = float(g[a_pos].mean()) if a_pos.any() else s_pos
+        new_neg = float(-g[a_neg].mean()) if a_neg.any() else s_neg
+        if not dual:
+            n_assigned = a_pos.sum() + a_neg.sum()
+            if n_assigned:
+                new = (a_pos.sum() * new_pos + a_neg.sum() * new_neg) / n_assigned
+            else:
+                new = s_pos
+            new_pos = new_neg = new
+        if new_pos == s_pos and new_neg == s_neg:
+            break
+        s_pos, s_neg = new_pos, new_neg
+    s_pos = max(s_pos, 1e-12)  # all-zero / one-sided group guards
+    s_neg = max(s_neg, 1e-12)
+    codes = np.zeros(g.shape[0], dtype=np.int8)
+    codes[g > 0.5 * s_pos] = 1
+    codes[g < -0.5 * s_neg] = -1
+    return s_pos, s_neg, codes
+
+
+def quantize_ternary_lloyd(w: np.ndarray, group_size: int = GROUP_SIZE,
+                           n_iter: int = 20) -> QuantResult:
+    """Candidate C (ours), symmetric: Lloyd-fit ternary {-s,0,+s}.
+
+    Same payload and storage as ternary_uniform (1.710 bpw at group 128),
+    but the per-group scale is Lloyd-fitted to the group's actual
+    distribution instead of fixed at the absmean. The SQNR comparison
+    against ternary_uniform at identical bitrate isolates whether Lloyd
+    *fitting* rescues ternary on the fidelity axis.
+    """
+    wp, n_groups, n = _groups(w, group_size)
+    scales = np.zeros((n_groups, 1), dtype=np.float32)
+    codes = np.zeros(n_groups * group_size, dtype=np.int8)
+    for gi in range(n_groups):
+        s_pos, _s_neg, c = _ternary_lloyd_fit(wp[gi], dual=False,
+                                              n_iter=n_iter)
+        scales[gi, 0] = np.float32(s_pos)
+        codes[gi * group_size:(gi + 1) * group_size] = c
+    codes = codes[:n]
+    bpw = TERNARY_PAYLOAD_BPW + _scale_overhead(1, group_size)
+    return QuantResult("ternary_lloyd", codes, scales, bpw,
+                       group_size=group_size)
+
+
+def quantize_ternary_lloyd_ds(w: np.ndarray, group_size: int = GROUP_SIZE,
+                              n_iter: int = 20) -> QuantResult:
+    """Candidate C (ours), dual-scale: Lloyd-fit {-s_neg,0,+s_pos}.
+
+    The asymmetric twin of ternary_lloyd: separate Lloyd-fitted scales per
+    side, 1.835 bpw at group 128 - identical bitrate to dual_scale_ternary,
+    so the comparison isolates fitting on skewed distributions.
+    """
+    wp, n_groups, n = _groups(w, group_size)
+    scales = np.zeros((n_groups, 2), dtype=np.float32)
+    codes = np.zeros(n_groups * group_size, dtype=np.int8)
+    for gi in range(n_groups):
+        s_pos, s_neg, c = _ternary_lloyd_fit(wp[gi], dual=True,
+                                             n_iter=n_iter)
+        scales[gi, 0] = np.float32(s_pos)
+        scales[gi, 1] = np.float32(s_neg)
+        codes[gi * group_size:(gi + 1) * group_size] = c
+    codes = codes[:n]
+    bpw = TERNARY_PAYLOAD_BPW + _scale_overhead(2, group_size)
+    return QuantResult("ternary_lloyd_ds", codes, scales, bpw,
+                       group_size=group_size)
+
+
 SCHEMES = {
     "ternary_uniform": quantize_ternary_uniform,
+    "ternary_lloyd": quantize_ternary_lloyd,
+    "ternary_lloyd_ds": quantize_ternary_lloyd_ds,
     "int2_symmetric": quantize_int2_symmetric,
     "int2_kmeans": quantize_int2_kmeans,
     "int2_kmeans_q8": quantize_int2_kmeans_q8,
