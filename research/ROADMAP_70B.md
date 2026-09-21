@@ -332,9 +332,22 @@ measuring where quality actually breaks.
       model vs a 2-bit codebook model at matched size; compare against the
       1.79x ceiling ratio predicted by prefill_roofline_tps (needs
       Justin's Mac)
-- [ ] Quant R&D: add the attention O(L^2) term to prefill_roofline_tps for
-      long context (32k+) — currently a documented under-count; at 128k
-      attention is no longer negligible vs the 70B matmuls
+- [x] Quant R&D: add the attention O(L^2) term to prefill_roofline_tps for
+      long context — LANDED 2026-09-21 (commit cd60e81, mirrored, 203
+      tests green). `include_attention=True` default (n_q_heads=64):
+      4*n_layers*n_q_heads*L^2*head_dim FLOPs (MAC=2) + KV read = KV
+      write; `include_attention=False` recovers the matmul-only model.
+      Honest consequence at 32k+: attention DOMINATES the matmuls, so
+      the quant-scheme prefill ceiling ratio compresses toward 1
+      (scheme-independent term swamps the per-weight FLOP difference) —
+      the prefill case for ternary over k-means largely evaporates at
+      very long context, while decode (bandwidth-bound, attention
+      O(L^2) absent from decode per-token) keeps the 1.36x ratio. The
+      "under-count at 128k" caveat is now closed.
+- [ ] Quant R&D: crossover context length — at what prompt length does
+      the attention term compress the ternary-vs-kmeans prefill ceiling
+      ratio below ~1.2x? (prefill_roofline_tps has the knobs; a small
+      script over L in {4k, 8k, 16k, 32k, 64k, 128k} would pin it)
 - [ ] Quant R&D: if a candidate holds up on real perplexity, design the
       ggml CPU kernel (ternary add/sub path) + upstream write-up/PR
 - [x] Quant R&D: add a K-means (Lloyd) 2-bit baseline — the fair classical
