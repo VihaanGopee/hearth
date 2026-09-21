@@ -10,6 +10,20 @@ profiles:
     backend: ollama
     status: stable
     notes: Current Hearth default. The baseline everything else must beat.
+      Rung-1 ladder candidate (20 tok/s target); recipe at
+      research/recipes/RUNG1_qwen3_8b_20tps.md.
+
+  - name: qwen3:14b
+    params_b: 14
+    quant: Q4_K_M
+    est_gb: 8.6
+    backend: ollama
+    status: experimental
+    notes: >
+      Rung-2 ladder candidate (14B-class at 20 tok/s). ~8.6 GB weights at
+      4.9 bpw; decode roofline on M1 Pro (~200 GB/s) ≈ 23 tok/s — tight
+      against the 20 tok/s bar, expect tuning (num_ctx, KV cache type) to
+      be needed. Recipe not yet written; measure with tools/measure_rung.py.
 
   - name: llama3.3-70b-IQ1_M
     params_b: 70

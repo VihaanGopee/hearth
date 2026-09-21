@@ -219,11 +219,17 @@ measuring where quality actually breaks.
       right next thread, applied to linears only.
       Follow-up: wte-vs-wpe split not yet run (one ~11 min run each) —
       folded into the embedding-table probe item below.
-- [ ] Quant R&D: OBQ/GPTQ-style second-order correction prototype — the
+- [x] Quant R&D: OBQ/GPTQ-style second-order correction prototype — the
       honest next fidelity step now that pure group-wise is exhausted on
       both SQNR and perplexity. Start with per-group Hessian-diagonal
       (empirical Fisher from a few forward passes) reweighting of the
       Lloyd/ternary fit; measure whether ppl exits collapse territory.
+      CLOSED 2026-09-21 — superseded by the three landed slices below:
+      Fisher reweighting (795.93, delta ~0), one-layer OBQ probe (52.65,
+      directionally right), and the full-model OBQ verdict (475.48 @
+      2.375 bpw vs 795.96 naive, missed the <400 bar — the group-wise
+      fidelity ladder is exhausted; the climb now goes through bigger
+      models + speed optimization, per standing direction).
 - [ ] Quant R&D: methodology caveat for future sweeps — perplexity only
       discriminates below ~10x the fp32 reference; in collapse territory
       report ordering as directional and do not quote ratios as quality
@@ -701,6 +707,24 @@ measuring where quality actually breaks.
       (795.96 vs 1085.61 at g256), and the current decode ratios (1.36x
       sym / 1.27x dual) are already computed against int2_kmeans_q8 at
       g128 — the reference config stands.
+- [ ] Rung-1 Mac-side validation — RECIPE READY 2026-09-21:
+      `research/recipes/RUNG1_qwen3_8b_20tps.md` + `tools/measure_rung.py`
+      (282 tests green incl. 23 new). On Justin's Mac: `ollama pull
+      qwen3:8b`, then `python3 tools/measure_rung.py --model qwen3:8b
+      --target 20`. Expected RAM ~5.6-6.0 GB (fitcheck: 4.9 GB weights +
+      0.3 GB KV @ 2048 ctx); roofline ~40 tok/s so 20 is expected but only
+      the measurement counts. Pass = mean decode >= 20 tok/s + 3 quality
+      sanity checks. Tuning ladder in the recipe (Metal offload check,
+      --num-ctx 2048, OLLAMA_KV_CACHE_TYPE=q8_0). Paste the script output
+      back as the measurement record.
+- [ ] Rung-2 recipe: 14B-class at 20 tok/s — candidate qwen3:14b Q4_K_M
+      (~8.6 GB weights; fitcheck arch `qwen3-14b` = (40, 8, 128) already
+      in ARCHES). Write `research/recipes/RUNG2_qwen3_14b_20tps.md`
+      following the rung-1 template (expected RAM, roofline: 200/8.6 ≈
+      23 tok/s ceiling — TIGHT, tuning likely needed), extend
+      measure_rung.py only if the harness needs new knobs.
+- [ ] Rung-2 Mac-side validation — run the rung-2 recipe on Justin's Mac;
+      record measured tok/s + which tuning steps were needed.
 - [ ] Quant R&D: vectorize the ternary Lloyd-fit encoder — currently a
       pure-Python per-group loop at ~2 Mparams/s (full-model
       ternary_1step ≈ 45 s, ternary_lloyd n_iter=20 ≈ 2 min). The
