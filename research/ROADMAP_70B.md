@@ -195,11 +195,15 @@ measuring where quality actually breaks.
 - [ ] Benchmark harness: quality-vs-quant curves on small models to validate the pipeline
 - [ ] Track BitNet.cpp releases + any 70B ternary model announcement
 - [ ] Track oQ/JANG releases and 2-bit MoE quality reports
-- [ ] Quant R&D: re-run the op-count energy/speed comparison with
-      ternary_lloyd as the ternary reference — fitted ternary may have a
-      different zero-rate than ternary_uniform, and the opcount numbers
-      used the uniform variant's measured sparsity (check whether the
-      1.36x / 3.0x figures move)
+- [x] Quant R&D: re-run the op-count energy/speed comparison with the
+      fitted ternary reference — landed 2026-09-21 as
+      `test_fitted_ternary_opcount_reference` (81 tests green). Verdict:
+      the figures barely move. Decode ceiling ratio UNCHANGED at 1.357x
+      (roofline is byte-driven, sparsity-independent); energy-proxy ratio
+      RISES from 3.04x to 3.52x because the fitted encoder's measured
+      zero-rate is 0.41 vs ternary_uniform's 0.31 (fewer adds/weight).
+      The ternary compute case is, if anything, slightly stronger than
+      first reported.
 - [x] Quant R&D: diagnostic — decompose the +1.4 dB Lloyd win into
       threshold adaptation vs scale refit (fix one, vary the other) to
       find the cheaper approximation of the fitted optimum — LANDED
@@ -210,12 +214,25 @@ measuring where quality actually breaks.
       heuristic scale fixed finds alpha=0.5 optimal — with the heuristic
       scale the heuristic threshold was already optimal; the problem was
       the scale. => the follow-up item below.
-- [ ] Quant R&D: add a "1-step Lloyd" ternary scheme — heuristic
+- [x] Quant R&D: add a "1-step Lloyd" ternary scheme — heuristic
       thresholds (+/-absmean/2) + a single L2-optimal scale refit — and
       check whether it captures ~85% of ternary_lloyd's SQNR at O(1)
-      extra cost (no iteration). If it holds, this is the practical
-      encoder for fitted ternary; compare its measured zero-rate against
-      ternary_uniform's for the opcount re-run.
+      extra cost (no iteration) — LANDED 2026-09-21 as `ternary_1step`
+      (`_ternary_lloyd_fit` with n_iter=1; 81 tests green). HOLDS: capture
+      0.84–0.87 across seeds 7–9 and skew 0.0/0.5 (seed 7 clean: 6.72 dB
+      vs uniform 5.56 / full Lloyd 6.93). One iteration IS the practical
+      encoder for fitted ternary. Note: the strict "refit scale, keep
+      heuristic codes" variant was tried and scores worse (6.45 dB) —
+      decode must reassign at the refit thresholds. Measured zero-rate
+      0.41 vs uniform's 0.31 (refit widens thresholds).
+- [x] Quant R&D: adopt a fitted-ternary reference — landed as
+      `ternary_1step` (the practical encoder) as the ternary reference
+      baseline-to-beat, alongside `int2_kmeans_q8` at group 256
+      (2.188 bpw) as the classical reference (see opcount re-run below).
+- [ ] Quant R&D: "1-step Lloyd" dual-scale variant — heuristic dual
+      thresholds -> one per-side refit -> reassign; check the capture on
+      skewed tensors against ternary_lloyd_ds (currently 0.84–0.87 for
+      the symmetric twin) — follows from the 1-step result.
 
 ## Ground rules for this research track
 

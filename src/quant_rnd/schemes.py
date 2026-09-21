@@ -30,6 +30,13 @@ Candidates (ours, to be validated):
   (symmetric) or dual-scale ternary {-s_neg,0,+s_pos}. Same 1.710 /
   1.835 bpw as ternary_uniform / DST, so the SQNR comparison against them
   is at exactly matched bitrate and isolates the value of fitting.
+- ternary_1step ("1-step Lloyd"): the diagnostic (diagnose.py) showed the
+  first Lloyd iteration (heuristic assignment -> one L2-optimal scale
+  refit -> reassignment at the refit thresholds) captures ~85% of the
+  ternary_lloyd win. This scheme is exactly that one iteration
+  (_ternary_lloyd_fit with n_iter=1): O(1) extra cost, no convergence
+  loop, identical 1.710 bpw. The practical encoder for fitted ternary if
+  the ~85% capture holds.
 """
 from dataclasses import dataclass, field
 
@@ -377,10 +384,44 @@ def quantize_ternary_lloyd_ds(w: np.ndarray, group_size: int = GROUP_SIZE,
                        group_size=group_size)
 
 
+def quantize_ternary_1step(w: np.ndarray, group_size: int = GROUP_SIZE) -> QuantResult:
+    """Candidate D (ours): "1-step Lloyd" ternary.
+
+    The diagnose.py decomposition showed the +1.4 dB ternary_lloyd win
+    over ternary_uniform is ~85% captured by the FIRST Lloyd iteration
+    (heuristic assignment -> one L2-optimal scale refit -> reassignment
+    at the refit thresholds) and ~15% by further iterations. This scheme
+    is exactly that one iteration - implemented by reusing
+    _ternary_lloyd_fit with n_iter=1 - so it costs O(1) extra work over
+    ternary_uniform (two passes per group, no convergence loop) and
+    stores a single fp16 scale per group: identical 1.710 bpw at
+    group 128. The SQNR comparison against ternary_uniform at matched
+    bitrate is then a direct test of whether one fit step suffices.
+
+    (A stricter reading - refit the scale but keep the heuristic codes -
+    was tried and scores worse: 6.45 vs 6.72 dB on the seed-7 clean
+    tensor, because decoding codes chosen for s0 at the larger refit
+    scale is inconsistent. Reassigning at the refit thresholds is the
+    honest encoder and is what this scheme does.)
+    """
+    wp, n_groups, n = _groups(w, group_size)
+    scales = np.zeros((n_groups, 1), dtype=np.float32)
+    codes = np.zeros(n_groups * group_size, dtype=np.int8)
+    for gi in range(n_groups):
+        s_pos, _s_neg, c = _ternary_lloyd_fit(wp[gi], dual=False, n_iter=1)
+        scales[gi, 0] = np.float32(s_pos)
+        codes[gi * group_size:(gi + 1) * group_size] = c
+    codes = codes[:n]
+    bpw = TERNARY_PAYLOAD_BPW + _scale_overhead(1, group_size)
+    return QuantResult("ternary_1step", codes, scales, bpw,
+                       group_size=group_size)
+
+
 SCHEMES = {
     "ternary_uniform": quantize_ternary_uniform,
     "ternary_lloyd": quantize_ternary_lloyd,
     "ternary_lloyd_ds": quantize_ternary_lloyd_ds,
+    "ternary_1step": quantize_ternary_1step,
     "int2_symmetric": quantize_int2_symmetric,
     "int2_kmeans": quantize_int2_kmeans,
     "int2_kmeans_q8": quantize_int2_kmeans_q8,

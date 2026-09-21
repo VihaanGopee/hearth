@@ -16,6 +16,7 @@ from src.quant_rnd import (
     quantize_int2_symmetric,
     quantize_ternary_lloyd,
     quantize_ternary_lloyd_ds,
+    quantize_ternary_1step,
     quantize_ternary_outlier,
     quantize_ternary_uniform,
 )
@@ -48,6 +49,7 @@ class TestSchemes(unittest.TestCase):
     def test_registry_has_baselines_and_candidates(self):
         self.assertEqual(set(SCHEMES),
                          {"ternary_uniform", "ternary_lloyd", "ternary_lloyd_ds",
+                          "ternary_1step",
                           "int2_symmetric", "int2_kmeans",
                           "int2_kmeans_q8",
                           "int2_outlier_retain", "dual_scale_ternary",
@@ -405,6 +407,31 @@ class TestOpCount(unittest.TestCase):
         with self.assertRaises(ValueError):
             scheme_report("x", bpw=2.0, kind="magic")
 
+    def test_fitted_ternary_opcount_reference(self):
+        # Opcount re-run with the FITTED ternary reference (ternary_1step,
+        # the practical fitted encoder) instead of ternary_uniform. The
+        # refit widens the thresholds -> higher zero-rate (~0.41 vs ~0.31)
+        # -> fewer adds/weight. The decode ceiling is byte-driven and
+        # must not move (1.36x), while the energy-proxy ratio must be at
+        # least as large as uniform's 3.04x. Measured: 1.357x / 3.52x.
+        rng = np.random.default_rng(7)
+        w = synthetic_weights(rng, n_groups=64)
+        q1 = quantize_ternary_1step(w, group_size=128)
+        qk = quantize_int2_kmeans_q8(w, group_size=128)
+        r1 = scheme_report("ternary_1step", bpw=q1.bpw, kind="ternary",
+                           sparsity=measured_sparsity(q1))
+        rk = scheme_report("int2_kmeans_q8", bpw=qk.bpw, kind="codebook",
+                           method="histogram")
+        self.assertAlmostEqual(r1["roofline_tps"] / rk["roofline_tps"],
+                               1.357, delta=0.01)
+        self.assertGreaterEqual(rk["equiv_adds_per_w"]
+                                / r1["equiv_adds_per_w"], 3.04)
+        self.assertLess(r1["equiv_adds_per_w"], rk["equiv_adds_per_w"])
+        # The fitted reference is sparser than uniform - the numbers are
+        # driven by a real, measured quantity, not an assumption.
+        zu = float(np.mean(quantize_ternary_uniform(w).codes == 0))
+        self.assertGreater(measured_sparsity(q1), zu)
+
 
 class TestTernaryLloyd(unittest.TestCase):
     """Candidate C: Lloyd with the codebook constrained to ternary."""
@@ -571,6 +598,76 @@ class TestLloydGainDecomposition(unittest.TestCase):
         # threshold placement.
         _grid_db, alpha = threshold_grid_ablation(self.w)
         self.assertAlmostEqual(alpha, 0.5, places=6)
+
+
+class TestTernary1Step(unittest.TestCase):
+    """Candidate D: "1-step Lloyd" ternary - one fit iteration, O(1) cost."""
+
+    def setUp(self):
+        rng = np.random.default_rng(7)
+        self.w = synthetic_weights(rng, n_groups=64)
+
+    def test_codes_valid_and_bpw_matched(self):
+        q = quantize_ternary_1step(self.w)
+        self.assertTrue(set(np.unique(q.codes)) <= {-1, 0, 1})
+        self.assertEqual(q.name, "ternary_1step")
+        # Identical storage to ternary_uniform: 1.585-bit payload + 1 fp16
+        # scale per group - the fidelity comparison is exactly matched.
+        self.assertAlmostEqual(q.bpw, math.log2(3) + 16 / 128, places=6)
+        self.assertAlmostEqual(q.bpw,
+                               quantize_ternary_uniform(self.w).bpw,
+                               places=9)
+
+    def test_deterministic(self):
+        a, b = quantize_ternary_1step(self.w), quantize_ternary_1step(self.w)
+        self.assertTrue(np.array_equal(a.codes, b.codes))
+        self.assertTrue(np.array_equal(a.scales, b.scales))
+
+    def test_all_zero_input_no_nan(self):
+        q = quantize_ternary_1step(np.zeros(512, dtype=np.float32))
+        r = q.reconstruct()
+        self.assertTrue(np.all(np.isfinite(r)))
+        self.assertTrue(np.all(r == 0.0))
+
+    def test_captures_most_of_lloyd_gain(self):
+        # The backlog question: does ONE Lloyd iteration capture ~85% of
+        # the full ternary_lloyd win over ternary_uniform? Seed 7 clean
+        # tensor measures 6.72 vs 5.56 vs 6.93 dB -> capture 0.85. Assert
+        # >= 0.80 so the test has margin against float noise, and assert
+        # the same on a skewed tensor (capture 0.84 measured there).
+        sqnr_u = sqnr_db(self.w, quantize_ternary_uniform(self.w).reconstruct())
+        sqnr_l = sqnr_db(self.w, quantize_ternary_lloyd(self.w).reconstruct())
+        sqnr_1 = sqnr_db(self.w, quantize_ternary_1step(self.w).reconstruct())
+        self.assertGreater(sqnr_l, sqnr_u + 1.0)  # sanity: full Lloyd wins
+        capture = (sqnr_1 - sqnr_u) / (sqnr_l - sqnr_u)
+        self.assertGreaterEqual(capture, 0.80)
+
+        rng = np.random.default_rng(7)
+        ws = synthetic_weights(rng, n_groups=64, skew=0.5)
+        u = sqnr_db(ws, quantize_ternary_uniform(ws).reconstruct())
+        l = sqnr_db(ws, quantize_ternary_lloyd(ws).reconstruct())
+        o = sqnr_db(ws, quantize_ternary_1step(ws).reconstruct())
+        self.assertGreaterEqual((o - u) / (l - u), 0.80)
+
+    def test_scale_differs_from_absmean_heuristic(self):
+        # The refit must actually move the scale: refit s > absmean s0
+        # on these tensors (absmean underestimates the L2-optimal scale).
+        q1 = quantize_ternary_1step(self.w)
+        qu = quantize_ternary_uniform(self.w)
+        s1 = q1.scales.ravel().astype(np.float64)
+        s0 = qu.scales.ravel().astype(np.float64)
+        self.assertGreater(np.mean(s1 / s0), 1.0)
+
+    def test_zero_rate_measured_and_higher_than_uniform(self):
+        # For the opcount re-run: fitted ternary's sparsity differs from
+        # ternary_uniform's (the refit widens the thresholds). Seed 7
+        # measures ~0.41 for 1-step vs ~0.31 for uniform; assert 1-step's
+        # zero rate is within [0.35, 0.50] and exceeds uniform's.
+        zr_1 = float(np.mean(quantize_ternary_1step(self.w).codes == 0))
+        zr_u = float(np.mean(quantize_ternary_uniform(self.w).codes == 0))
+        self.assertGreater(zr_1, zr_u)
+        self.assertGreaterEqual(zr_1, 0.35)
+        self.assertLessEqual(zr_1, 0.50)
 
 
 if __name__ == "__main__":
