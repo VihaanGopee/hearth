@@ -93,9 +93,10 @@ def is_bandwidth_bound(flops_per_byte: float, peak_flops: float,
 # --- prefill (compute-bound) roofline ---------------------------------------
 # Prefill streams the weights ONCE for the whole prompt while every weight
 # is reused prompt_len times, so arithmetic intensity ~= prompt_len times
-# the decode intensity and the regime flips to compute-bound. Attention's
-# O(L^2) term is ignored (under ~5% of matmul FLOPs at 4k for a 70B-shaped
-# model); it matters at very long context and is a known under-count there.
+# the decode intensity and the regime flips to compute-bound. The attention
+# O(L^2) term IS modeled (4 * n_layers * n_q_heads * L^2 * head_dim FLOPs,
+# MAC counted as 2 FLOPs) -- at 32k+ context it dominates the matmuls.
+# Pass include_attention=False to recover the matmul-only model.
 
 # Activation traffic per token per layer, in units of d_model elements:
 # read input + write output + FFN intermediate traffic. This is an
@@ -108,15 +109,22 @@ def prefill_roofline_tps(n_params: float, bpw: float, opcount: dict,
                          prompt_len: int, bandwidth_gbs: float,
                          peak_flops: float, efficiency: float = 1.0,
                          n_layers: int = 80, d_model: int = 8192,
-                         n_kv_heads: int = 8, head_dim: int = 128,
-                         bytes_per_elem: int = 2) -> dict:
+                         n_q_heads: int = 64, n_kv_heads: int = 8,
+                         head_dim: int = 128,
+                         bytes_per_elem: int = 2,
+                         include_attention: bool = True) -> dict:
     """Optimistic prefill ceiling in tok/s for one prompt of prompt_len.
 
     Model: weights are streamed once (weight_bytes), activations move an
     estimated 6*d_model elements per token per layer, and the KV write for
     the prompt is kv_cache_bytes(ctx=prompt_len). FLOPs are counted as
     adds + muls per weight (same convention as scheme_report; lookups are
-    not FLOPs). Ceiling = prompt_len / max(bytes/bandwidth, flops/peak).
+    not FLOPs). Attention adds 4 * n_layers * n_q_heads * prompt_len^2 *
+    head_dim FLOPs (Q@K^T + attn@V, MAC = 2 FLOPs), plus a KV read equal
+    in size to the KV write; the scores-matrix traffic itself is assumed
+    fused (not modeled). Ceiling = prompt_len / max(bytes/bandwidth,
+    flops/peak). Pass include_attention=False to get the matmul-only
+    model (useful for isolating the quant-scheme ceiling ratio).
 
     peak_flops is an explicit argument (no baked-in constant): pass the
     published peak for the engine you model, e.g. the Apple-published
@@ -136,20 +144,32 @@ def prefill_roofline_tps(n_params: float, bpw: float, opcount: dict,
         raise ValueError("peak_flops must be positive")
     if not 0.0 < efficiency <= 1.0:
         raise ValueError("efficiency must be in (0, 1]")
+    if n_q_heads < 1:
+        raise ValueError("n_q_heads must be a positive integer")
     flops_per_token = n_params * (opcount["adds"] + opcount["muls"])
-    total_flops = flops_per_token * prompt_len
+    matmul_flops = flops_per_token * prompt_len
+    attention_flops = 0.0
+    kv_read_B = 0.0
+    if include_attention:
+        attention_flops = (4.0 * n_layers * n_q_heads
+                           * prompt_len * prompt_len * head_dim)
+        kv_read_B = kv_cache_bytes(n_layers=n_layers, n_kv_heads=n_kv_heads,
+                                   head_dim=head_dim, ctx=prompt_len,
+                                   bytes_per_elem=bytes_per_elem)
+    total_flops = matmul_flops + attention_flops
     weight_B = weight_bytes(n_params, bpw)
     act_B = (prompt_len * n_layers * d_model * bytes_per_elem
              * _PREFILL_ACT_TRAFFIC_ELEMS)
     kv_write_B = kv_cache_bytes(n_layers=n_layers, n_kv_heads=n_kv_heads,
                                 head_dim=head_dim, ctx=prompt_len,
                                 bytes_per_elem=bytes_per_elem)
-    total_B = weight_B + act_B + kv_write_B
+    total_B = weight_B + act_B + kv_write_B + kv_read_B
     arith_intensity = total_flops / total_B
     t_compute = total_flops / peak_flops
     t_bandwidth = total_B / (bandwidth_gbs * 1e9)
     return {
         "total_flops": total_flops,
+        "attention_flops": attention_flops,
         "bytes_moved": total_B,
         "arith_intensity_flops_per_byte": arith_intensity,
         "bandwidth_bound": is_bandwidth_bound(arith_intensity, peak_flops,

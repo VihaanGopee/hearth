@@ -612,20 +612,37 @@ class TestOpCount(unittest.TestCase):
         self.assertGreater(
             p4_t["arith_intensity_flops_per_byte"],
             100 * peak / (M1_PRO_MEM_BW_GBS * 1e9))
-        # Compute-bound -> the ceiling ratio is exactly the FLOP-per-weight
-        # ratio (peak, efficiency and prompt_len all cancel). Measured on
-        # seed 7 this is ~1.79x: ternary's add/skip MAC vs the codebook
-        # histogram MAC. Conservative: adds count as 1 FLOP against an
-        # FMA-counted peak, so a real add-dominated ternary kernel has up
-        # to ~2x headroom above this ceiling on FMA hardware.
+        # Compute-bound -> the ceiling ratio is the ratio of TOTAL
+        # flops/token, i.e. (matmul flops + attention flops)/token.
+        # Attention is scheme-independent, so the quant ratio is
+        # compressed toward 1 vs the matmul-only figure (exactly the
+        # effect this term was added to capture); include_attention=False
+        # recovers the exact per-weight ratio pinned below.
         f_t = oc_t["adds"] + oc_t["muls"]
         f_k = oc_k["adds"] + oc_k["muls"]
-        ratio = p4_t["ceil_tps"] / p4_k["ceil_tps"]
+        attn_per_token = p4_t["attention_flops"] / 4096
+        self.assertAlmostEqual(
+            p4_t["ceil_tps"] / p4_k["ceil_tps"],
+            (N_PARAMS_70B * f_k + attn_per_token)
+            / (N_PARAMS_70B * f_t + attn_per_token),
+            delta=1e-6)
+        # Sanity: the compute-bound ceiling reduces to peak/flops_per_token
+        # including the attention term.
+        self.assertAlmostEqual(p4_t["ceil_tps"],
+                               peak / (N_PARAMS_70B * f_t + attn_per_token),
+                               delta=1.0)
+        # include_attention=False recovers the exact matmul-only ratio.
+        q4_t = prefill_roofline_tps(bpw=q1.bpw, opcount=oc_t,
+                                    prompt_len=4096, include_attention=False,
+                                    **kw)
+        q4_k = prefill_roofline_tps(bpw=qk.bpw, opcount=oc_k,
+                                    prompt_len=4096, include_attention=False,
+                                    **kw)
+        ratio = q4_t["ceil_tps"] / q4_k["ceil_tps"]
         self.assertAlmostEqual(ratio, f_k / f_t, delta=1e-6)
         self.assertGreater(ratio, 1.5)
-        # Sanity: the compute-bound ceiling reduces to peak/flops_per_token.
-        self.assertAlmostEqual(p4_t["ceil_tps"], peak / (N_PARAMS_70B * f_t),
-                               delta=1.0)
+        self.assertAlmostEqual(q4_t["ceil_tps"],
+                               peak / (N_PARAMS_70B * f_t), delta=1.0)
         # Input validation.
         with self.assertRaises(ValueError):
             prefill_roofline_tps(n_params=N_PARAMS_70B, bpw=q1.bpw,
@@ -637,6 +654,50 @@ class TestOpCount(unittest.TestCase):
                                  opcount=oc_t, prompt_len=8,
                                  bandwidth_gbs=M1_PRO_MEM_BW_GBS,
                                  peak_flops=0.0)
+
+    def test_prefill_attention_term_math(self):
+        """The O(L^2) attention term: pinned FLOPs formula, KV-read byte
+        accounting, prompt-length scaling, and the long-context regime
+        verdict the term was added to model."""
+        kw = dict(n_params=N_PARAMS_70B, bpw=2.0,
+                  opcount={"adds": 0.5, "muls": 0.01},
+                  bandwidth_gbs=M1_PRO_MEM_BW_GBS, peak_flops=5.2e12,
+                  n_layers=80, n_kv_heads=8, head_dim=128)
+        L = 32768
+        p = prefill_roofline_tps(prompt_len=L, **kw)
+        # Q@K^T + attn@V: 2 matmuls x (2 FLOPs/MAC) x heads x L^2 x d_head.
+        expect_attn = 4.0 * 80 * 64 * L * L * 128
+        self.assertAlmostEqual(p["attention_flops"], expect_attn, delta=1.0)
+        self.assertAlmostEqual(p["total_flops"],
+                               N_PARAMS_70B * 0.51 * L + expect_attn,
+                               delta=1.0)
+        # KV is read once during attention on top of the prompt KV write:
+        # KV traffic doubles relative to the matmul-only model.
+        no_attn = prefill_roofline_tps(prompt_len=L, include_attention=False,
+                                       **kw)
+        kv_write = 2.0 * 80 * 8 * 128 * L * 2
+        self.assertAlmostEqual(p["bytes_moved"] - no_attn["bytes_moved"],
+                               kv_write, delta=1.0)
+        # Term disabled -> zero attention FLOPs and exact matmul-only
+        # numerics (byte traffic = weight + act + KV write only).
+        self.assertEqual(no_attn["attention_flops"], 0.0)
+        # At 32k the attention term dominates the matmuls for a 70B-shaped
+        # model -- the documented reason the term matters at long context.
+        self.assertGreater(p["attention_flops"],
+                           N_PARAMS_70B * 0.51 * L)
+        # Regime stays compute-bound at 32k; the ceiling is honest about
+        # attention dominating the quant-scheme difference.
+        self.assertFalse(p["bandwidth_bound"])
+        # GQA scaling: doubling query heads doubles the attention FLOPs;
+        # the L^2 scaling is exact across prompt lengths.
+        p2 = prefill_roofline_tps(prompt_len=L, n_q_heads=128, **kw)
+        self.assertAlmostEqual(p2["attention_flops"],
+                               2.0 * p["attention_flops"], delta=1.0)
+        p4 = prefill_roofline_tps(prompt_len=16384, **kw)
+        self.assertAlmostEqual(p["attention_flops"],
+                               4.0 * p4["attention_flops"], delta=1.0)
+        with self.assertRaises(ValueError):
+            prefill_roofline_tps(prompt_len=L, n_q_heads=0, **kw)
 
 
 class TestTernaryLloyd(unittest.TestCase):
