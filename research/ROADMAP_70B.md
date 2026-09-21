@@ -123,12 +123,46 @@ measuring where quality actually breaks.
       ternary_uniform 1.36x higher decode ceiling + 3.0x lower
       energy-proxy op cost vs int2_kmeans_q8 at 70B scale (see checked
       op-count item below); next: Mac-side validation, prefill roofline.
-- [ ] Quant R&D: when the real-tiny-model perplexity run happens, check
-      whether the synthetic ranking (k-means > ternary_lloyd >
-      ternary_outlier > dual_scale_ternary) reproduces on real weights —
-      the ranking, not the absolute dB, is what transfers.
+- [x] Quant R&D: does the synthetic SQNR ranking reproduce on real weights
+      — ANSWERED YES 2026-09-21 (`src/quant_rnd/realweights.py`,
+      dependency-free .safetensors parser, 97 tests green). GPT-2 124M,
+      48 linear weight matrices, 64 groups/matrix, seeds 7+8: ranking
+      matches synthetic almost exactly — Lloyd k-means 9.4-9.5 dB >>
+      ternary_lloyd_ds 7.0-7.1 > ternary_lloyd 6.8-6.9 >
+      ternary_1step_ds ~= ternary_outlier 6.5-6.6 (tied within noise) >
+      ternary_1step 6.4-6.5 > int2_outlier_retain 5.8-5.9 >
+      dual_scale_ternary 5.3-5.4 > ternary_uniform 5.25-5.33 >
+      int2_symmetric 2.8-3.1. Absolute SQNR within ~0.3 dB of synthetic
+      for all schemes except int2_outlier_retain (-0.6 dB, real outliers
+      are harder to isolate than planted ones) and int2_symmetric
+      (+0.3-0.6 dB). Weights live at research/data/gpt2.safetensors
+      (gitignored, reusable). Caveat: SQNR, not perplexity — the
+      distribution caveat is closed, the PPL caveat is not.
 - [ ] Quant R&D: validate candidates on a real tiny model (60–130M params,
-      CPU-friendly) — real perplexity vs the synthetic SQNR ranking
+      CPU-friendly) — real perplexity vs the synthetic SQNR ranking.
+      Step 1 landed (real-weight SQNR probe above); step 2 is a numpy
+      GPT-2 forward pass over research/data/gpt2.safetensors measuring
+      perplexity per scheme on a few hundred tokens of text. The parser,
+      tensor selection, and sampled-block harness all exist already.
+- [x] Quant R&D: group-size sensitivity of the real-weight ranking —
+      ANSWERED 2026-09-21: re-ran realweights.py at g64 and g256
+      (CLI gained a `--group-size` flag, `parse_args` factored for
+      testability; 99 tests green). The ranking is essentially
+      group-size invariant (seed 7, 48 matrices): Lloyd k-means first,
+      then ternary_lloyd_ds, then ternary_lloyd at ALL three sizes.
+      g64: 9.95 / 7.34 / 7.07 dB; g128: ~9.4 / 7.0 / 6.8;
+      g256: 9.09 / 6.83 / 6.72. All schemes lose SQNR as groups grow
+      (Lloyd 9.95→9.09 g64→g256; naive int2_symmetric collapses at g256:
+      1.21 dB). One outlier-rate-driven shuffle: ternary_outlier passes
+      ternary_lloyd at g64 (7.21 vs 7.07 @ 2.535 bpw) and falls below
+      ternary_1step at g256 (6.21 vs 6.30 @ 1.823 bpw) — expected from
+      its n_outliers/group bitrate, not a story change. Feeds the
+      opcount-table item below: the ranking does not prefer a group
+      size; the perplexity run still needs to pick 128 vs 256.
+- [ ] Quant R&D: add embedding-table (wte) quantization to the real-weight
+      probe — currently excluded by name; embedding rows have a very
+      different distribution and are the largest single tensor in small
+      models.
 - [x] Quant R&D: sweep outlier_frac / n_outliers for the Pareto frontier
       (SQNR vs bpw) — landed 2026-09-20 as `src/quant_rnd/sweep.py`
       (seed 7). Frontier: ternary family below ~2.06 bpw (ternary_uniform
@@ -277,6 +311,9 @@ measuring where quality actually breaks.
       size (128 vs 256), re-run the opcount table at that group size —
       the current decode ratios (1.36x sym / 1.27x dual) are computed
       against int2_kmeans_q8 at g128; g256 dilutes them (1.177x dual).
+      Note 2026-09-21: the SQNR ranking is group-size invariant, so the
+      choice now rests purely on the perplexity run + bpw budget (g64 is
+      SQNR-best but bpw-worst: 2.750 for kmeans_q8).
 
 ## Ground rules for this research track
 

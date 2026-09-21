@@ -1,7 +1,10 @@
 """Tests for the quant R&D prototypes (avenue H): baselines + candidates."""
+import json
 import math
 import os
+import struct
 import sys
+import tempfile
 import unittest
 
 import numpy as np
@@ -22,6 +25,13 @@ from src.quant_rnd import (
     quantize_ternary_uniform,
 )
 from src.quant_rnd.bench import run_bench, sqnr_db, synthetic_weights
+from src.quant_rnd.realweights import (
+    linear_weight_tensors,
+    parse_args,
+    rank_on_real_weights,
+    read_safetensors,
+    sample_groups,
+)
 from src.quant_rnd.sweep import CONFIGS, pareto_frontier, run_sweep
 from src.quant_rnd.opcount import (
     M1_PRO_MEM_BW_GBS,
@@ -888,6 +898,152 @@ class TestTernary1StepDs(unittest.TestCase):
         c3 = self._capture(w9, 3)
         self.assertGreaterEqual(c3, c1)
         self.assertGreaterEqual(self._capture(w9, 5), 0.95)
+
+
+def _write_safetensors(path, tensors):
+    """Write a minimal .safetensors file (test helper, NumPy only)."""
+    header, blobs, offset = {}, [], 0
+    dtype_names = {np.dtype("float32"): "F32", np.dtype("float16"): "F16"}
+    for name, arr in tensors.items():
+        blob = np.ascontiguousarray(arr).tobytes()
+        header[name] = {"dtype": dtype_names[arr.dtype],
+                        "shape": list(arr.shape),
+                        "data_offsets": [offset, offset + len(blob)]}
+        offset += len(blob)
+        blobs.append(blob)
+    hb = json.dumps(header).encode("utf-8")
+    with open(path, "wb") as f:
+        f.write(struct.pack("<Q", len(hb)))
+        f.write(hb)
+        for b in blobs:
+            f.write(b)
+
+
+class TestRealWeights(unittest.TestCase):
+    def test_safetensors_roundtrip(self):
+        rng = np.random.default_rng(3)
+        want = {
+            "h.0.attn.c_attn.weight": rng.standard_normal((8, 16)).astype(np.float32),
+            "h.0.ln_1.weight": rng.standard_normal(8).astype(np.float16),
+        }
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "m.safetensors")
+            _write_safetensors(p, want)
+            got = read_safetensors(p)
+        self.assertEqual(set(got), set(want))
+        for k in want:
+            self.assertEqual(got[k].shape, want[k].shape)
+            self.assertEqual(got[k].dtype, want[k].dtype)
+            np.testing.assert_array_equal(got[k], want[k])
+
+    def test_safetensors_rejects_unsupported_dtype(self):
+        header = {"w": {"dtype": "BF16", "shape": [4],
+                        "data_offsets": [0, 8]}}
+        hb = json.dumps(header).encode("utf-8")
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "m.safetensors")
+            with open(p, "wb") as f:
+                f.write(struct.pack("<Q", len(hb)))
+                f.write(hb)
+                f.write(b"\x00" * 8)
+            with self.assertRaises(ValueError):
+                read_safetensors(p)
+
+    def test_linear_weight_tensors_filters(self):
+        fake = {
+            "h.0.attn.c_attn.weight": np.zeros((8, 8), np.float32),
+            "h.0.attn.c_attn.bias": np.zeros(8, np.float32),
+            "h.0.ln_1.weight": np.zeros(8, np.float32),
+            "transformer.wte.weight": np.zeros((16, 8), np.float32),
+            "lm_head.weight": np.zeros((16, 8), np.float32),
+        }
+        got = linear_weight_tensors(fake)
+        self.assertEqual(list(got), ["h.0.attn.c_attn.weight",
+                                     "lm_head.weight"])
+
+    def test_sample_groups_deterministic_and_aligned(self):
+        rng = np.random.default_rng(11)
+        t = rng.standard_normal((64, 128)).astype(np.float32)
+        a = sample_groups(t, 5, 128, np.random.default_rng(5))
+        b = sample_groups(t, 5, 128, np.random.default_rng(5))
+        np.testing.assert_array_equal(a, b)
+        self.assertEqual(a.shape, (5 * 128,))
+        # every sampled block is a contiguous slice of the flattened tensor
+        flat = t.ravel()
+        for i in range(5):
+            block = a[i * 128:(i + 1) * 128]
+            starts = np.flatnonzero((flat[:len(flat) - 127] == block[0]))
+            self.assertTrue(
+                any(np.array_equal(flat[s:s + 128], block) for s in starts),
+                "sampled block not found as a contiguous slice")
+
+    def test_sample_groups_clamps_to_available_blocks(self):
+        t = np.zeros((2, 128), np.float32)
+        got = sample_groups(t, 10, 128, np.random.default_rng(1))
+        self.assertEqual(got.shape, (2 * 128,))
+
+    def test_rank_on_real_weights_smoke(self):
+        rng = np.random.default_rng(13)
+        mats = {
+            "a.weight": synthetic_weights(rng, n_groups=4),
+            "b.weight": synthetic_weights(rng, n_groups=4),
+        }
+        # reshape to 2-D so they look like real matrices
+        mats = {k: v.reshape(4, 128) for k, v in mats.items()}
+        schemes = {"ternary_uniform": quantize_ternary_uniform,
+                   "int2_kmeans_q8": quantize_int2_kmeans_q8}
+        res = rank_on_real_weights(mats, n_groups_per_matrix=4, seed=7,
+                                   schemes=schemes)
+        self.assertEqual([r["scheme"] for r in res],
+                         sorted([r["scheme"] for r in res],
+                                key=lambda n: next(
+                                    x["sqnr_db"] for x in res
+                                    if x["scheme"] == n),
+                                reverse=True))
+        self.assertTrue(all(r["n_matrices"] == 2 for r in res))
+        # aggregate equals the mean of direct per-matrix SQNR
+        for r in res:
+            direct = []
+            rng2 = np.random.default_rng(7)
+            for name in ("a.weight", "b.weight"):
+                w = sample_groups(mats[name], 4, 128, rng2)
+                q = schemes[r["scheme"]](w)
+                direct.append(sqnr_db(w, q.reconstruct()))
+            self.assertAlmostEqual(r["sqnr_db"], sum(direct) / 2, places=9)
+
+    def test_parse_args_group_size(self):
+        args = parse_args(["model.safetensors"])
+        self.assertEqual(args.group_size, 128)
+        args = parse_args(["model.safetensors", "--group-size", "64"])
+        self.assertEqual(args.group_size, 64)
+        args = parse_args(["model.safetensors", "--group-size", "256",
+                           "--seed", "9"])
+        self.assertEqual((args.group_size, args.seed), (256, 9))
+
+    def test_rank_group_size_sensitivity_smoke(self):
+        # The ranking must stay Lloyd-first across group sizes (the
+        # g64/g256 real-weight runs answer whether it holds exactly;
+        # here we pin the harness behavior on synthetic data).
+        rng = np.random.default_rng(13)
+        mats = {f"{k}.weight": synthetic_weights(rng, n_groups=8).reshape(4, 256)
+                for k in ("a", "b")}
+        schemes = {"ternary_uniform": quantize_ternary_uniform,
+                   "ternary_1step": quantize_ternary_1step,
+                   "int2_kmeans_q8": quantize_int2_kmeans_q8}
+        orders = {}
+        for gs in (64, 128, 256):
+            res = rank_on_real_weights(mats, n_groups_per_matrix=4, seed=7,
+                                       group_size=gs, schemes=schemes)
+            orders[gs] = [r["scheme"] for r in res]
+            # stored bpw must track group size: 2.0 + 48/gs for kmeans_q8
+            got = {r["scheme"]: r["bpw"] for r in res}
+            self.assertAlmostEqual(got["int2_kmeans_q8"], 2.0 + 48 / gs,
+                                   places=9)
+        self.assertEqual(orders[64], orders[128])
+        self.assertEqual(orders[128], orders[256])
+        # classical Lloyd reference on top at every group size
+        for order in orders.values():
+            self.assertEqual(order[0], "int2_kmeans_q8")
 
 
 if __name__ == "__main__":

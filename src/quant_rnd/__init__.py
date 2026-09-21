@@ -12,6 +12,10 @@ Honest limits, stated up front:
   roadmap backlog item "wire bench to real tiny model").
 - bpw figures account for payload + scale/index overhead per 128-weight
   group, so cross-scheme comparisons are at (roughly) matched bitrates.
+- realweights.py runs the same SQNR ranking on real model weights
+  (dependency-free .safetensors parser) to check whether the synthetic
+  ranking reproduces on real distributions. Still a proxy for perplexity,
+  but it removes the "synthetic distribution" caveat.
 """
 from .schemes import (
     QuantResult,
@@ -43,6 +47,11 @@ def __getattr__(name):
         from . import opcount as _opcount
 
         return getattr(_opcount, name)
+    if name in ("read_safetensors", "linear_weight_tensors", "sample_groups",
+                "rank_on_real_weights"):
+        from . import realweights as _rw
+
+        return getattr(_rw, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
@@ -74,4 +83,8 @@ __all__ = [
     "scheme_report",
     "print_report",
     "is_bandwidth_bound",
+    "read_safetensors",
+    "linear_weight_tensors",
+    "sample_groups",
+    "rank_on_real_weights",
 ]
