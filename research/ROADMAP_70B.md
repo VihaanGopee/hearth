@@ -179,10 +179,15 @@ measuring where quality actually breaks.
       bitrate; the symmetric full fit stays the ternary reference.
       Full-vs-1step dual gap is 4.9x (13225 -> 2719), smaller than the
       symmetric 25x gap — dual is closer to converged at n_iter=1.
-- [ ] Quant R&D: int2_kmeans_q8 perplexity at g256 (2.188 bpw) — the
+- [x] Quant R&D: int2_kmeans_q8 perplexity at g256 (2.188 bpw) — the
       opcount reference config; SQNR dips 9.68 -> 9.09 g128 -> g256, so
       this checks whether the ppl gradient prefers g128 or g256 and
-      pins the fidelity anchor the OBQ work must beat.
+      pins the fidelity anchor the OBQ work must beat. ANSWERED
+      2026-09-21: **g256 LOSES — 1085.61 @ 2.188 bpw** (vs 795.96 @
+      2.375 bpw at g128), despite only a -0.59 dB SQNR dip. The
+      perplexity gradient prefers the smaller group size: more
+      per-group codebook fidelity beats the 0.19 bpw rate saving. The
+      OBQ anchor is therefore **795.96 @ g128 (2.375 bpw)**.
 - [ ] Quant R&D: is the 795 ppl at 2.375 bpw limited by embeddings/LN?
       quantize_model currently passes wte, pos embeddings, biases, LN
       through in fp32 — run an ablation leaving them fp32 vs also
@@ -356,6 +361,21 @@ measuring where quality actually breaks.
       caught: an unregistered dual-scheme name silently mis-decodes in
       reconstruct() via the single-scale fallback — the
       _DUAL_SCALE_SCHEMES registration is load-bearing for correctness.)
+- [ ] Quant R&D: robustness of the g128-vs-g256 ppl gap — the 795 vs 1086
+      verdict is a single eval text (406 tokens, one author) and one
+      seed per run; re-check with a second eval text and a shuffled
+      block sample before locking 795.96 as the OBQ fidelity anchor.
+- [ ] Quant R&D: OBQ first slice — before a full GPTQ-style pass,
+      implement per-group empirical-Fisher reweighting of the Lloyd
+      centroid fit only (diagonal Hessian from a few fp32 forward
+      passes), and measure the ppl delta vs unweighted Lloyd at g128.
+      If the delta is ~0, skip to full per-weight error-compensation;
+      if it moves ppl, it becomes the cheap default.
+- [ ] Quant R&D: 1-step Lloyd re-fit of centroids is already the cheap
+      fitted-ternary encoder; check whether its measured 0.41 zero-rate
+      (vs 0.31 uniform) can be raised toward 0.5 (more sparsity -> more
+      add-skip) without ppl collapse, e.g. threshold widening with the
+      n_iter=20 scale.
 - [x] Quant R&D: re-run the opcount energy/speed comparison with the
       dual fitted reference (`ternary_1step_ds` at n_iter=2, measured
       zero-rate per side) — LANDED 2026-09-21 as
@@ -368,13 +388,12 @@ measuring where quality actually breaks.
       per-side split on skewed tensor pos=0.415 / neg=0.168 (the op-profile
       shift the re-run was meant to capture). n_scales=2 costs only
       ~0.016 muls/weight — genuinely "slight".
-- [ ] Quant R&D: when the tiny-model perplexity run selects a real group
+- [x] Quant R&D: when the tiny-model perplexity run selects a real group
       size (128 vs 256), re-run the opcount table at that group size —
-      the current decode ratios (1.36x sym / 1.27x dual) are computed
-      against int2_kmeans_q8 at g128; g256 dilutes them (1.177x dual).
-      Note 2026-09-21: the SQNR ranking is group-size invariant, so the
-      choice now rests purely on the perplexity run + bpw budget (g64 is
-      SQNR-best but bpw-worst: 2.750 for kmeans_q8).
+      RESOLVED 2026-09-21 without re-running: perplexity selects g128
+      (795.96 vs 1085.61 at g256), and the current decode ratios (1.36x
+      sym / 1.27x dual) are already computed against int2_kmeans_q8 at
+      g128 — the reference config stands.
 - [ ] Quant R&D: vectorize the ternary Lloyd-fit encoder — currently a
       pure-Python per-group loop at ~2 Mparams/s (full-model
       ternary_1step ≈ 45 s, ternary_lloyd n_iter=20 ≈ 2 min). The
