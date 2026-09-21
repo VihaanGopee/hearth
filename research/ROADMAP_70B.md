@@ -502,20 +502,35 @@ measuring where quality actually breaks.
       matched bitrate, machinery verified end to end. BUT: one layer is
       ~1.4% of params, so the probe is near the noise floor — the real
       verdict needs the full-model slice below.
-- [ ] Quant R&D: OBQ full-model slice — apply quantize_layer_obq to all
-      48 linear layers (one capture forward already gets every layer's
-      X; per-layer Hessian inverse + block update) and measure ppl vs
-      the 795.96 naive anchor at g128. PROTOCOL (checkpointed, per
-      the standing direction): run `python3 -m src.quant_rnd.ppl
-      research/data/gpt2.safetensors --obq-all --obq-ckpt-dir
-      research/data/obq_ckpt --obq-max-layers N` (N sized to the
-      session budget, e.g. 12–24); each run checkpoints and prints the
-      resume point — keep running chunks until the manifest shows
-      48/48, then the run assembles and prints the verdict itself.
-      Decision rule: if full-model OBQ exits collapse territory
-      materially (< ~400 ppl), the fidelity path is alive; if delta ~0,
-      the Hessian-second-order story is exhausted on GPT-2 124M at this
-      scale and the honest conclusion is logged.
+- [x] Quant R&D: OBQ full-model slice — ANSWERED 2026-09-21
+      (checkpointed protocol completed across 3 runs: 12 + 24 + 12
+      layers; manifest at research/data/obq_ckpt/, per-column 4-centroid
+      Lloyd + 8-bit codebook at matched 2.375 bpw g128, damped inverse
+      Hessian, calibrated on eval_text.txt). **Full-model OBQ ppl:
+      475.48 @ 2.375 bpw** vs naive anchor 795.96 (eval_text1, 406
+      tokens). Verdict: 1.67x better than naive, but 8.9x above fp32
+      (53.50) — still in collapse territory per the harness's own
+      decision rule. The <~400 bar for "fidelity path alive" was NOT
+      met. Honest conclusion per the item's protocol: second-order
+      error compensation at ~2.4 bpw cannot reach usable quality on
+      this scale; the pure-group-wise fidelity ladder is exhausted
+      (naive -> Lloyd -> Fisher-reweight -> full OBQ), and no further
+      small-scale fidelity iteration at this bitrate is expected to
+      change that. The quant-R&D story now rests on the compute side
+      (ternary add/sub kernels, opcount 1.36x decode / 1.79x prefill
+      ceilings) and on fundamentally different foundations
+      (native-ternary models, MoE, Mac-side validation). The
+      checkpointing protocol worked as designed: 12 + 24 + 12 layers
+      across three sessions, bit-identical assembly, survived a
+      background restart.
+- [ ] Quant R&D: fidelity-ladder retrospective — naive -> Lloyd k-means
+      -> Fisher reweighting -> full OBQ all collapsed at ~2.4 bpw
+      (475 best), so the next fidelity ideas must be STRUCTURALLY
+      different to be worth a session: e.g. sensitivity-adaptive bit
+      allocation across layers (early/late layers at higher precision)
+      at matched average bpw, or per-layer mixed schemes with the bpw
+      budget reallocated by Fisher-trace sensitivity. Any such idea
+      gets one matched-bitrate experiment max before re-evaluation.
 - [x] Quant R&D: unblock the full-model OBQ measurement — PARTIALLY
       LANDED 2026-09-21 as `src/quant_rnd/obq_ckpt.py` + `ppl.py
       --obq-all --obq-ckpt-dir DIR [--obq-max-layers N]` (commit
