@@ -327,6 +327,13 @@ measuring where quality actually breaks.
       Note 2026-09-21: the SQNR ranking is group-size invariant, so the
       choice now rests purely on the perplexity run + bpw budget (g64 is
       SQNR-best but bpw-worst: 2.750 for kmeans_q8).
+- [ ] Quant R&D: vectorize the ternary Lloyd-fit encoder — currently a
+      pure-Python per-group loop at ~2 Mparams/s (full-model
+      ternary_1step ≈ 45 s, ternary_lloyd n_iter=20 ≈ 2 min). The
+      2026-09-21 reconstruct fix (O(n^2) -> O(n), 1000x) unblocked the
+      step-2b sweep; the encoder is now the dominant cost per scheme.
+      Careful: keep bit-identical numerics vs the per-group float64 path
+      (pin with a test), or document any intentional deviation.
 
 ## Ground rules for this research track
 
