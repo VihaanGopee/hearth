@@ -11,6 +11,10 @@ Baselines (approximate llama.cpp-style behavior, not bit-exact):
   (mixed-precision flavor of the oQ/JANG idea).
 - int2_kmeans: classical 1-D Lloyd 2-bit (4 fitted centroids per group) -
   the fair comparison naive symmetric int2 lacks.
+- int2_kmeans_q8: same Lloyd fit, but the 4 centroids are stored in 8-bit
+  (one fp16 scale per group) - the codebook trick real IQ quants use.
+  Brings the classical baseline down to 2.375 bpw, near our candidates'
+  ~2.06-2.24 bpw, for a (roughly) matched-bitrate comparison.
 
 Candidates (ours, to be validated):
 - dual_scale_ternary ("DST"): asymmetric ternary. Real weight tensors are
@@ -55,8 +59,9 @@ class QuantResult:
             s = self.scales[gi]
             if self.name == "dual_scale_ternary":
                 rec = np.where(c > 0, s[0], np.where(c < 0, -s[1], 0.0))
-            elif self.name == "int2_kmeans":
-                # s holds the 4 Lloyd centroids; codes index into them.
+            elif self.name in _CODEBOOK_SCHEMES:
+                # s holds the effective per-group codebook (fp16-fitted or
+                # 8-bit-rounded centroids); codes index into it.
                 rec = s[c.astype(np.int64)]
             else:
                 rec = c * s[0]
@@ -64,6 +69,11 @@ class QuantResult:
         if self._outlier_vals is not None:
             out[self._outlier_idx] = self._outlier_vals
         return out
+
+
+# Schemes whose `scales` hold an effective per-group codebook that the
+# integer `codes` index into (rather than multiplicative scales).
+_CODEBOOK_SCHEMES = frozenset({"int2_kmeans", "int2_kmeans_q8"})
 
 
 def _groups(w: np.ndarray, group_size: int = GROUP_SIZE):
@@ -225,10 +235,39 @@ def quantize_int2_kmeans(w: np.ndarray, group_size: int = GROUP_SIZE,
     return QuantResult("int2_kmeans", codes, centroids, bpw)
 
 
+def quantize_int2_kmeans_q8(w: np.ndarray, group_size: int = GROUP_SIZE,
+                            n_iter: int = 20) -> QuantResult:
+    """Matched-bitrate k-means: Lloyd 2-bit with an 8-bit codebook.
+
+    Same per-group Lloyd fit as int2_kmeans, but the 4 fitted centroids are
+    stored in 8-bit (symmetric, one fp16 scale per group) - the storage
+    trick real codebook quants (llama.cpp IQ) use. This brings the
+    classical baseline from 2.5 bpw down to 2.375 bpw, near our candidates'
+    ~2.06-2.24 bpw, so the SQNR comparison is at (roughly) matched bitrate.
+
+    The returned scales hold the DEQUANTIZED centroids, so reconstruct()
+    measures exactly what a real decoder would see, including the 8-bit
+    codebook rounding; code assignment is also done against the stored
+    (rounded) codebook, as an honest encoder would.
+    """
+    wp, n_groups, n = _groups(w, group_size)
+    centroids = np.stack([_lloyd_1d(g, n_iter=n_iter) for g in wp])
+    # Symmetric 8-bit quantization of the per-group codebook.
+    cmax = np.max(np.abs(centroids), axis=1, keepdims=True).astype(np.float32)
+    cmax = np.maximum(cmax, 1e-12)  # all-zero group guard
+    q8 = np.round(centroids / cmax * 127.0).astype(np.int8)
+    deq = (q8.astype(np.float32) / 127.0 * cmax)
+    codes = np.abs(wp[:, :, None] - deq[:, None, :]).argmin(axis=2)
+    codes = codes.astype(np.int8).ravel()[:n]
+    bpw = 2.0 + 4 * 8 / group_size + _scale_overhead(1, group_size)
+    return QuantResult("int2_kmeans_q8", codes, deq, bpw)
+
+
 SCHEMES = {
     "ternary_uniform": quantize_ternary_uniform,
     "int2_symmetric": quantize_int2_symmetric,
     "int2_kmeans": quantize_int2_kmeans,
+    "int2_kmeans_q8": quantize_int2_kmeans_q8,
     "int2_outlier_retain": quantize_int2_outlier_retain,
     "dual_scale_ternary": quantize_dual_scale_ternary,
     "ternary_outlier": quantize_ternary_outlier,

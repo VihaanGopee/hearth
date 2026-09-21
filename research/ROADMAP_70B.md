@@ -103,9 +103,23 @@ measuring where quality actually breaks.
       Synthetic result: 9.68 dB — best SQNR, but at the highest bitrate.
       Honest read: the classical baseline beats our candidates on synthetic
       SQNR; they are cheaper in bpw. Follow-up below.
-- [ ] Quant R&D: matched-bitrate k-means variant (quantize the 4 centroids
-      to 8-bit -> ~2.25 bpw) to test whether ternary_outlier still loses to
-      the classical baseline at equal bitrate
+- [x] Quant R&D: matched-bitrate k-means variant — landed 2026-09-20 as
+      `int2_kmeans_q8` (Lloyd fit, 4 centroids in 8-bit + one fp16
+      codebook scale -> 2.375 bpw; 39 tests green). Result: 8-bit codebook
+      rounding is nearly free (9.0486 vs 9.0489 dB on the test tensor), and
+      **ternary_outlier still loses to the classical baseline** (6.60 dB @
+      2.06 bpw vs 9.05 dB @ 2.375 bpw). Negative result, recorded honestly:
+      on synthetic SQNR, Lloyd k-means owns the ~2.4 bpw Pareto point.
+- [ ] Quant R&D: pivot the candidate story — since Lloyd beats our
+      candidates on SQNR, the case for ternary schemes must rest on
+      inference cost (add/sub vs multiplies), not fidelity. Next: either
+      (a) find a scheme that beats k-means below ~2.2 bpw on SQNR, or
+      (b) quantify the ternary compute advantage and aim the ggml kernel
+      work there. Don't chase SQNR parity with Lloyd.
+- [ ] Quant R&D: when the real-tiny-model perplexity run happens, check
+      whether the synthetic ranking (k-means > ternary_outlier >
+      dual_scale_ternary) reproduces on real weights — the ranking, not
+      the absolute dB, is what transfers.
 - [ ] Quant R&D: validate candidates on a real tiny model (60–130M params,
       CPU-friendly) — real perplexity vs the synthetic SQNR ranking
 - [ ] Quant R&D: sweep outlier_frac / n_outliers for the Pareto frontier
