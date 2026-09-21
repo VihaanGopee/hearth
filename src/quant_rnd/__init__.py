@@ -32,6 +32,13 @@ def __getattr__(name):
         from . import bench as _bench
 
         return getattr(_bench, name)
+    if name in ("M1_PRO_MEM_BW_GBS", "N_PARAMS_70B", "decode_roofline_tps",
+                "kv_cache_bytes", "weight_bytes", "ternary_opcount",
+                "codebook_opcount", "equiv_adds", "measured_sparsity",
+                "scheme_report", "print_report", "is_bandwidth_bound"):
+        from . import opcount as _opcount
+
+        return getattr(_opcount, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
@@ -47,4 +54,16 @@ __all__ = [
     "run_bench",
     "sqnr_db",
     "synthetic_weights",
+    "M1_PRO_MEM_BW_GBS",
+    "N_PARAMS_70B",
+    "decode_roofline_tps",
+    "kv_cache_bytes",
+    "weight_bytes",
+    "ternary_opcount",
+    "codebook_opcount",
+    "equiv_adds",
+    "measured_sparsity",
+    "scheme_report",
+    "print_report",
+    "is_bandwidth_bound",
 ]

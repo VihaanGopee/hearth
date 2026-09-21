@@ -19,6 +19,19 @@ from src.quant_rnd import (
 )
 from src.quant_rnd.bench import run_bench, sqnr_db, synthetic_weights
 from src.quant_rnd.sweep import CONFIGS, pareto_frontier, run_sweep
+from src.quant_rnd.opcount import (
+    M1_PRO_MEM_BW_GBS,
+    N_PARAMS_70B,
+    codebook_opcount,
+    decode_roofline_tps,
+    equiv_adds,
+    is_bandwidth_bound,
+    kv_cache_bytes,
+    measured_sparsity,
+    scheme_report,
+    ternary_opcount,
+    weight_bytes,
+)
 
 
 def _mse(a, b):
@@ -290,6 +303,104 @@ class TestSweep(unittest.TestCase):
                                bench["ternary_outlier"]["bpw"], places=9)
         self.assertAlmostEqual(sweep["ternary_outlier n=2"]["sqnr_db"],
                                bench["ternary_outlier"]["sqnr_db"], places=6)
+
+
+class TestOpCount(unittest.TestCase):
+    """Tests for the op-count + roofline model (pivot part b)."""
+
+    def test_kv_cache_matches_roadmap_ram_math(self):
+        # Roadmap says 70B KV cache is ~1.3 GB at 4k ctx fp16.
+        kv = kv_cache_bytes()  # Llama-70B-shaped defaults
+        self.assertAlmostEqual(kv, 1.34217728e9, delta=1e6)
+
+    def test_weight_bytes(self):
+        # 70B at 2 bpw = 17.5 GB.
+        self.assertAlmostEqual(weight_bytes(N_PARAMS_70B, 2.0), 17.5e9)
+
+    def test_roofline_halving_bpw_doubles_tps(self):
+        kv = kv_cache_bytes()
+        fast = decode_roofline_tps(M1_PRO_MEM_BW_GBS,
+                                   weight_bytes(N_PARAMS_70B, 1.0), kv)
+        slow = decode_roofline_tps(M1_PRO_MEM_BW_GBS,
+                                   weight_bytes(N_PARAMS_70B, 2.0), kv)
+        # With KV held fixed the ratio is diluted below 2.0 but still > 1.
+        self.assertGreater(fast / slow, 1.0)
+        self.assertLessEqual(fast / slow, 2.0)
+        # Exact: tok/s = BW / bytes_per_token.
+        self.assertAlmostEqual(
+            fast, M1_PRO_MEM_BW_GBS * 1e9 / (weight_bytes(N_PARAMS_70B, 1.0) + kv))
+
+    def test_roofline_rejects_bad_inputs(self):
+        with self.assertRaises(ValueError):
+            decode_roofline_tps(M1_PRO_MEM_BW_GBS, 0.0)
+        with self.assertRaises(ValueError):
+            decode_roofline_tps(M1_PRO_MEM_BW_GBS, 1e9, efficiency=1.5)
+
+    def test_ternary_opcount_zeros_are_skipped(self):
+        oc = ternary_opcount(sparsity=0.5, n_scales=1, group_size=128)
+        self.assertAlmostEqual(oc["adds"], 0.5)
+        self.assertAlmostEqual(oc["muls"], 1.0 / 128)
+        self.assertEqual(oc["lookups"], 0.0)
+        # Dual-scale costs two scale multiplies per group; outliers add MACs.
+        oc2 = ternary_opcount(sparsity=0.5, n_scales=2, group_size=128,
+                              n_outliers=2)
+        self.assertAlmostEqual(oc2["muls"], 4.0 / 128)
+        self.assertAlmostEqual(oc2["adds"], 0.5 + 2.0 / 128)
+
+    def test_ternary_opcount_rejects_bad_sparsity(self):
+        with self.assertRaises(ValueError):
+            ternary_opcount(sparsity=1.5)
+
+    def test_codebook_histogram_beats_naive(self):
+        naive = codebook_opcount(method="naive")
+        hist = codebook_opcount(method="histogram")
+        # The histogram trick must cut multiplies far below one per weight.
+        self.assertLess(hist["muls"], 0.1)
+        self.assertAlmostEqual(naive["muls"], 1.0 + 2.0 / 128)
+        self.assertLess(equiv_adds(hist), equiv_adds(naive))
+
+    def test_codebook_rejects_unknown_method(self):
+        with self.assertRaises(ValueError):
+            codebook_opcount(method="magic")
+
+    def test_measured_sparsity_on_real_quantizer(self):
+        rng = np.random.default_rng(42)
+        w = synthetic_weights(rng, n_groups=8)
+        q = quantize_ternary_uniform(w)
+        s = measured_sparsity(q)
+        self.assertGreater(s, 0.3)  # symmetric ternary zeroes the body
+        self.assertLess(s, 0.8)
+
+    def test_end_to_end_ternary_beats_kmeans_on_roofline_and_ops(self):
+        # The headline of pivot part (b): with measured sparsity from the
+        # real quantizers, ternary_uniform must show BOTH a higher decode
+        # ceiling (fewer bytes) AND lower energy-proxy op cost than the
+        # k-means-q8 reference at group 128.
+        rng = np.random.default_rng(7)
+        w = synthetic_weights(rng, n_groups=64)
+        qt = quantize_ternary_uniform(w, group_size=128)
+        qk = quantize_int2_kmeans_q8(w, group_size=128)
+        rt = scheme_report("ternary_uniform", bpw=qt.bpw, kind="ternary",
+                           sparsity=measured_sparsity(qt))
+        rk = scheme_report("int2_kmeans_q8", bpw=qk.bpw, kind="codebook",
+                           method="histogram")
+        self.assertLess(rt["bpw"], rk["bpw"])
+        self.assertGreater(rt["roofline_tps"], rk["roofline_tps"])
+        # Speedup ratio is bounded above by the bpw ratio (KV dilutes it).
+        self.assertLessEqual(rt["roofline_tps"] / rk["roofline_tps"],
+                             rk["bpw"] / rt["bpw"] + 1e-9)
+        self.assertLess(rt["equiv_adds_per_w"], rk["equiv_adds_per_w"])
+        # Both are bandwidth-bound on M1-Pro-class hardware: arithmetic
+        # intensity well under a 10 FLOP/byte machine balance.
+        for r in (rt, rk):
+            self.assertTrue(is_bandwidth_bound(r["flops_per_byte"],
+                                               peak_flops=2e12,
+                                               bandwidth_gbs=200.0))
+            self.assertLess(r["flops_per_byte"], 10.0)
+
+    def test_scheme_report_rejects_unknown_kind(self):
+        with self.assertRaises(ValueError):
+            scheme_report("x", bpw=2.0, kind="magic")
 
 
 if __name__ == "__main__":

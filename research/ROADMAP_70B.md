@@ -119,7 +119,10 @@ measuring where quality actually breaks.
       on both clean and skewed tensors, and Lloyd is skew-invariant. Don't
       chase SQNR parity with Lloyd. Part (b) is now the main thread:
       quantify the ternary compute advantage and aim the ggml kernel
-      work there.
+      work there. Part (b) QUANTIFIED 2026-09-20 (`src/quant_rnd/opcount.py`):
+      ternary_uniform 1.36x higher decode ceiling + 3.0x lower
+      energy-proxy op cost vs int2_kmeans_q8 at 70B scale (see checked
+      op-count item below); next: Mac-side validation, prefill roofline.
 - [ ] Quant R&D: when the real-tiny-model perplexity run happens, check
       whether the synthetic ranking (k-means > ternary_outlier >
       dual_scale_ternary) reproduces on real weights — the ranking, not
@@ -149,10 +152,32 @@ measuring where quality actually breaks.
       reference baseline-to-beat for future candidate schemes — it
       undercuts the old 2.375 bpw reference and matches our candidates'
       bitrate band.
-- [ ] Quant R&D: op-count model of ternary matmul (add/sub per MAC) vs
+- [x] Quant R&D: op-count model of ternary matmul (add/sub per MAC) vs
       int2 codebook-lookup + fp dequant-multiply, for the bandwidth-bound
-      Apple Silicon decode regime — the quantitative case for the ggml
-      ternary kernel the pivot now rests on.
+      Apple Silicon decode regime — landed 2026-09-20 as
+      `src/quant_rnd/opcount.py` (11 new tests, 57/57 green). The
+      quantitative case the pivot now rests on, at 70B scale / 200 GB/s
+      / 1.34 GB KV (4k ctx fp16):
+      ternary_uniform (1.71 bpw, measured sparsity 31%): 14.96 GB,
+      roofline 12.3 t/s, 0.71 equiv-adds/weight;
+      int2_kmeans_q8 (2.375 bpw, histogram dequant): 20.78 GB, roofline
+      9.0 t/s, 2.17 equiv-adds/weight.
+      => **1.36x higher decode ceiling, 3.0x lower energy-proxy op cost**
+      for ternary over the Lloyd reference. All schemes are
+      bandwidth-bound (2.8-7.7 FLOP/byte vs ~10 machine balance), so the
+      bpw-driven byte reduction is the first-order effect; the add/sub
+      MAC advantage is second-order on decode, first-order in
+      compute-bound regimes (prefill). MODEL ONLY — ceilings, not
+      measured tok/s; Mac validation is a follow-up below. Caveat:
+      14.96 GB still exceeds the ~10-11 GB usable budget, so this
+      quantifies the *speed* case contingent on a fitting path.
+- [ ] Quant R&D: Mac-side validation of the roofline ratios — measure real
+      decode tok/s on Justin's Mac for a ternary/TQ1_0 model vs a 2-bit
+      codebook model at matched size; compare against the 1.3-1.4x
+      ceiling ratio predicted by opcount.py (needs Justin's Mac)
+- [ ] Quant R&D: extend opcount.py with a prefill (compute-bound) roofline
+      — the regime where ternary's 3x equiv-adds advantage becomes the
+      first-order effect
 - [ ] Quant R&D: if a candidate holds up on real perplexity, design the
       ggml CPU kernel (ternary add/sub path) + upstream write-up/PR
 - [x] Quant R&D: add a K-means (Lloyd) 2-bit baseline — the fair classical
