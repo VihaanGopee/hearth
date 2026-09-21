@@ -138,7 +138,7 @@ measuring where quality actually breaks.
       (+0.3-0.6 dB). Weights live at research/data/gpt2.safetensors
       (gitignored, reusable). Caveat: SQNR, not perplexity — the
       distribution caveat is closed, the PPL caveat is not.
-- [ ] Quant R&D: validate candidates on a real tiny model (60–130M params,
+- [x] Quant R&D: validate candidates on a real tiny model (60–130M params,
       CPU-friendly) — real perplexity vs the synthetic SQNR ranking.
       Step 1 landed (real-weight SQNR probe above); step 2a LANDED
       2026-09-21 as `src/quant_rnd/gpt2_forward.py` + `gpt2_tokenizer.py`
@@ -148,10 +148,44 @@ measuring where quality actually breaks.
       on 406 tokens of hand-composed ASCII prose
       (research/data/eval_text.txt) — sane band for GPT-2 124M, so the
       forward pass is verified end to end. The parser, tensor selection,
-      and sampled-block harness all exist already. Step 2b (next):
-      per-scheme quantized perplexity — quantize every linear weight
-      group-wise with each scheme, reconstruct, forward, compare ppl
-      against the 53.50 reference and the synthetic SQNR ranking.
+      and sampled-block harness all exist already. Step 2b LANDED
+      2026-09-21 (`python3 -m src.quant_rnd.ppl`, 7-scheme default sweep,
+      g128, ~7.7 min): **everything collapses vs fp32** — best
+      ternary_lloyd 2764.68 @ 1.710 bpw vs 53.50 reference (52x worse).
+      Top tier transfers directionally (fitted ternary family dominates;
+      lloyd beats naive uniform 186x at matched bitrate), but below the
+      fitted tier SQNR ordering scrambles (dual_scale SQNR-beats uniform
+      yet ppl-loses 4.7x; diagnostics rule out bad/dead groups — it is
+      cliff noise). Surprise revising a prior conclusion: full Lloyd
+      beats 1-step 25x in ppl (2764 vs 70997) at only 0.2 dB SQNR
+      difference — "1-step captures 85%" was SQNR-true but
+      perplexity-incomplete; in collapse territory small fidelity deltas
+      amplify wildly through 12 layers. Verdict: simple group-wise
+      quantizers at <=2.2 bpw do not yield a usable GPT-2 124M (honest
+      negative); the fidelity path needs second-order correction (see
+      follow-ups below). The opcount compute-advantage story is
+      untouched — it never depended on pure group-wise usability.
+- [ ] Quant R&D: int2_kmeans_q8 perplexity run — the fidelity-gradient
+      check. Excluded from the 05:15 DEFAULT_SWEEP for speed (~7 min
+      full-model quantize + 40 s forward); if ppl recovers substantially
+      at 9.68 dB SQNR it confirms the harness measures a real gradient
+      and bounds how far fidelity must go before perplexity discriminates.
+- [ ] Quant R&D: full ternary_lloyd_ds perplexity (n_iter=20) — missing
+      from the 05:15 sweep, which ran only the n_iter=1 1step_ds (13225
+      ppl). Given the 25x full-vs-1step gap on the symmetric twin, the
+      full dual fit is the scheme most likely to approach usable ppl.
+- [ ] Quant R&D: OBQ/GPTQ-style second-order correction prototype — the
+      honest next fidelity step now that pure group-wise is exhausted on
+      both SQNR and perplexity. Start with per-group Hessian-diagonal
+      (empirical Fisher from a few forward passes) reweighting of the
+      Lloyd/ternary fit; measure whether ppl exits collapse territory.
+- [ ] Quant R&D: methodology caveat for future sweeps — perplexity only
+      discriminates below ~10x the fp32 reference; in collapse territory
+      report ordering as directional and do not quote ratios as quality
+      figures for the 70B case.
+- [ ] Quant R&D: ternary_lloyd perplexity at g64 (SQNR-best group size,
+      ~5 min quantize) — checks whether the g64 SQNR edge (9.95/7.34/7.07
+      dB) buys anything in ppl before the OBQ work changes the picture.
 - [ ] Quant R&D: this VM has no optimized BLAS, so one 406-token forward
       pass costs ~40 s (the (T,768)@(768,50257) logits matmul dominates).
       The step-2b per-scheme sweep is ~10 forwards; if that gets slow,
