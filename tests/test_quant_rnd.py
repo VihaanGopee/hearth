@@ -489,5 +489,89 @@ class TestTernaryLloyd(unittest.TestCase):
             self.assertTrue(np.all(np.isfinite(r)), fn.__name__)
 
 
+from src.quant_rnd.diagnose import (
+    diagnostic_report,
+    lloyd_step_sqnr,
+    threshold_grid_ablation,
+)
+from src.quant_rnd.schemes import _groups, _ternary_lloyd_fit
+
+
+class TestLloydGainDecomposition(unittest.TestCase):
+    """Decompose the +1.4 dB Lloyd-fit ternary win (diagnose.py)."""
+
+    def setUp(self):
+        rng = np.random.default_rng(7)
+        self.w = synthetic_weights(rng, n_groups=64)
+
+    def test_lloyd_history_records_heuristic_init(self):
+        wp, n_groups, _n = _groups(self.w)
+        h = []
+        _ternary_lloyd_fit(wp[0], dual=False, history=h)
+        self.assertGreaterEqual(len(h), 1)
+        # First recorded state is the absmean heuristic init (the fitter
+        # works in float64, so compare against the float64 absmean).
+        g64 = wp[0].astype(np.float64)
+        self.assertAlmostEqual(h[0][0], float(np.mean(np.abs(g64))),
+                               places=9)
+        self.assertAlmostEqual(h[0][1], h[0][0], places=9)  # symmetric
+
+    def test_lloyd_history_does_not_change_scheme_output(self):
+        # The history hook is diagnostics-only: same output with/without.
+        wp, _ng, _n = _groups(self.w)
+        h = []
+        a = _ternary_lloyd_fit(wp[0], dual=False, history=h)
+        b = _ternary_lloyd_fit(wp[0], dual=False)
+        self.assertEqual(a[0], b[0])
+        self.assertEqual(a[1], b[1])
+        np.testing.assert_array_equal(a[2], b[2])
+
+    def test_lloyd_step0_matches_uniform(self):
+        steps = lloyd_step_sqnr(self.w)
+        uniform = sqnr_db(self.w, quantize_ternary_uniform(self.w).reconstruct())
+        self.assertAlmostEqual(steps[0], uniform, places=6)
+
+    def test_lloyd_step_sqnr_monotone(self):
+        # Alternating minimization: MSE cannot increase step to step.
+        steps = lloyd_step_sqnr(self.w)
+        for prev, cur in zip(steps, steps[1:]):
+            self.assertGreaterEqual(cur, prev - 1e-9)
+
+    def test_lloyd_converged_matches_scheme(self):
+        steps = lloyd_step_sqnr(self.w)
+        lloyd = sqnr_db(self.w, quantize_ternary_lloyd(self.w).reconstruct())
+        self.assertAlmostEqual(steps[-1], lloyd, places=3)
+
+    def test_scale_refit_is_dominant_gain_term(self):
+        # Verified decomposition: the one-step L2 scale refit captures
+        # most of the Lloyd gain; threshold adaptation is the remainder.
+        steps = lloyd_step_sqnr(self.w)
+        self.assertGreater(len(steps), 1)
+        scale_refit = steps[1] - steps[0]
+        threshold_adapt = steps[-1] - steps[1]
+        self.assertGreater(scale_refit, 0.0)
+        self.assertGreater(scale_refit, threshold_adapt)
+
+    def test_decomposition_sums_to_total_gain(self):
+        r = diagnostic_report(seed=7)
+        self.assertAlmostEqual(
+            r["scale_refit_gain_db"] + r["threshold_adapt_gain_db"],
+            r["total_gain_db"], places=9)
+
+    def test_threshold_grid_at_least_uniform(self):
+        # The grid includes alpha=0.5 (uniform's threshold), so the best
+        # grid point is provably no worse than the heuristic.
+        uniform = sqnr_db(self.w, quantize_ternary_uniform(self.w).reconstruct())
+        grid_db, _alpha = threshold_grid_ablation(self.w)
+        self.assertGreaterEqual(grid_db, uniform - 1e-9)
+
+    def test_threshold_grid_confirms_threshold_was_not_bottleneck(self):
+        # With the heuristic scale held fixed, the grid's best threshold
+        # is the heuristic one: the problem was the scale, not the
+        # threshold placement.
+        _grid_db, alpha = threshold_grid_ablation(self.w)
+        self.assertAlmostEqual(alpha, 0.5, places=6)
+
+
 if __name__ == "__main__":
     unittest.main()

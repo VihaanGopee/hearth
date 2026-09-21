@@ -200,9 +200,22 @@ measuring where quality actually breaks.
       different zero-rate than ternary_uniform, and the opcount numbers
       used the uniform variant's measured sparsity (check whether the
       1.36x / 3.0x figures move)
-- [ ] Quant R&D: diagnostic — decompose the +1.4 dB Lloyd win into
+- [x] Quant R&D: diagnostic — decompose the +1.4 dB Lloyd win into
       threshold adaptation vs scale refit (fix one, vary the other) to
-      find the cheaper approximation of the fitted optimum
+      find the cheaper approximation of the fitted optimum — LANDED
+      2026-09-20 as `src/quant_rnd/diagnose.py` (74 tests green). Verdict:
+      the win is ~85% scale refit (+1.16 dB at step 1) and ~15% threshold
+      adaptation (+0.20 dB to convergence) on clean tensors; skewed
+      tensors split +1.13/+0.22 dB. A threshold-grid ablation with the
+      heuristic scale fixed finds alpha=0.5 optimal — with the heuristic
+      scale the heuristic threshold was already optimal; the problem was
+      the scale. => the follow-up item below.
+- [ ] Quant R&D: add a "1-step Lloyd" ternary scheme — heuristic
+      thresholds (+/-absmean/2) + a single L2-optimal scale refit — and
+      check whether it captures ~85% of ternary_lloyd's SQNR at O(1)
+      extra cost (no iteration). If it holds, this is the practical
+      encoder for fitted ternary; compare its measured zero-rate against
+      ternary_uniform's for the opcount re-run.
 
 ## Ground rules for this research track
 

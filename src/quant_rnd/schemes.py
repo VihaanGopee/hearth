@@ -280,7 +280,8 @@ def quantize_int2_kmeans_q8(w: np.ndarray, group_size: int = GROUP_SIZE,
 
 
 def _ternary_lloyd_fit(g: np.ndarray, dual: bool,
-                       n_iter: int = 20) -> tuple:
+                       n_iter: int = 20,
+                       history: list | None = None) -> tuple:
     """Constrained 1-D Lloyd for a ternary codebook.
 
     Fits {-s, 0, +s} (or dual-scale {-s_neg, 0, +s_pos}) to one group by
@@ -289,6 +290,10 @@ def _ternary_lloyd_fit(g: np.ndarray, dual: bool,
     symmetric s is the mean |x| over non-zero-assigned weights (L2
     optimality), and the dual scales are the per-side conditional means.
     Deterministic; no random restarts. Returns (s_pos, s_neg, codes).
+
+    If `history` is a list, the (s_pos, s_neg) state is appended after the
+    heuristic initialization and after every scale update, so callers can
+    decompose the fit gain step by step (used by diagnose.py).
     """
     g = g.astype(np.float64)
     if dual:
@@ -298,6 +303,8 @@ def _ternary_lloyd_fit(g: np.ndarray, dual: bool,
         s_neg = float(-neg.mean()) if neg.size else 0.0
     else:
         s_pos = s_neg = float(np.mean(np.abs(g)))
+    if history is not None:
+        history.append((s_pos, s_neg))  # heuristic init (absmean)
     for _ in range(n_iter):
         a_pos = g > 0.5 * s_pos
         a_neg = g < -0.5 * s_neg
@@ -313,6 +320,8 @@ def _ternary_lloyd_fit(g: np.ndarray, dual: bool,
         if new_pos == s_pos and new_neg == s_neg:
             break
         s_pos, s_neg = new_pos, new_neg
+        if history is not None:
+            history.append((s_pos, s_neg))  # post-update state
     s_pos = max(s_pos, 1e-12)  # all-zero / one-sided group guards
     s_neg = max(s_neg, 1e-12)
     codes = np.zeros(g.shape[0], dtype=np.int8)
