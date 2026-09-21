@@ -421,6 +421,31 @@ measuring where quality actually breaks.
 - [ ] Benchmark harness: quality-vs-quant curves on small models to validate the pipeline
 - [ ] Track BitNet.cpp releases + any 70B ternary model announcement
 - [ ] Track oQ/JANG releases and 2-bit MoE quality reports
+- [x] Quant R&D: low-active-parameter MoE survey — SURVEYED 2026-09-21
+      (research/moe_survey_2026-09-21.md). Central candidate confirmed:
+      Qwen3.5-35B-A3B (35B total / 3.3B active, 256 experts 8+1 shared,
+      40 layers). In-budget in-RAM: unsloth IQ2_M GGUF (10.6 GB, ~2.45
+      bpw) — quality at that bitrate UNVERIFIED, the week's key unknown.
+      Borderline: mtrpires mixed-IQK (11.38 GB disk / ~12.5 GB RAM,
+      principled attention/shared-expert protection) and
+      unsloth Qwen3.6-35B-A3B-MTP IQ2_XXS (11.819 GB, native MTP head —
+      composes with the speculative backend). Best benchmarked ~2-bit:
+      oQ2 MLX (MMLU 64.0% vs naive 2-bit 14.0%, HumanEval 78.0%,
+      MBPP 63.3%, TruthfulQA 80.0%) but ~12.6 GB — over in-RAM, needs
+      flash-paging. Jundot publishes prebuilt oQ models on HF. Verdict:
+      no option is 70B-dense quality; "70B-class" must be measured vs
+      dense models that fit 16 GB, not assumed. Recommended Mac
+      validation order in the survey note.
+- [ ] Mac-side: Qwen3.5-35B-A3B IQ2_M (10.6 GB) — measure tok/s + quality
+      (MMLU subset) on the M1 Pro; compare vs the oQ2 64% MMLU datapoint
+      (needs Justin's Mac)
+- [ ] Mac-side: mtrpires mixed-IQK (11.38 GB) — does it hold under memory
+      pressure with q4_0 KV cache at 8–12k ctx? (needs Justin's Mac)
+- [ ] Hearth: documented llamacpp recipe/profile for the 35B-A3B IQ2_M
+      (opt-in config snippet), wiring speculative prompt_lookup mode with
+      the Qwen3.6 MTP variant
+- [ ] Re-check HF for a prebuilt oQ2/oQ2.5 35B-A3B MLX upload (Jundot org);
+      if one appears at ~12.6 GB, re-evaluate vs IQ2_M on quality-per-GB
 - [x] Quant R&D: re-run the op-count energy/speed comparison with the
       fitted ternary reference — landed 2026-09-21 as
       `test_fitted_ternary_opcount_reference` (81 tests green). Verdict:
