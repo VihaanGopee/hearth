@@ -124,9 +124,9 @@ measuring where quality actually breaks.
       energy-proxy op cost vs int2_kmeans_q8 at 70B scale (see checked
       op-count item below); next: Mac-side validation, prefill roofline.
 - [ ] Quant R&D: when the real-tiny-model perplexity run happens, check
-      whether the synthetic ranking (k-means > ternary_outlier >
-      dual_scale_ternary) reproduces on real weights — the ranking, not
-      the absolute dB, is what transfers.
+      whether the synthetic ranking (k-means > ternary_lloyd >
+      ternary_outlier > dual_scale_ternary) reproduces on real weights —
+      the ranking, not the absolute dB, is what transfers.
 - [ ] Quant R&D: validate candidates on a real tiny model (60–130M params,
       CPU-friendly) — real perplexity vs the synthetic SQNR ranking
 - [x] Quant R&D: sweep outlier_frac / n_outliers for the Pareto frontier
@@ -142,16 +142,19 @@ measuring where quality actually breaks.
       Side fix the sweep exposed: `QuantResult.reconstruct()` hard-coded
       GROUP_SIZE=128 and crashed on other group sizes; group_size is now
       stored on the result (46 tests green).
-- [ ] Quant R&D: candidate C — "Lloyd-fit ternary": 1-D Lloyd with the
-      codebook constrained to ternary {-s,0,+s} (or dual-scale
-      {-s_neg,0,+s_pos}). The sweep suggests k-means *fitting* is doing
-      the heavy lifting, not the codebook size; this tests whether Lloyd
-      fitting rescues ternary at 1.71–1.84 bpw. If it beats DST/T1+out
-      there, it becomes the new ternary reference.
-- [ ] Quant R&D: adopt `int2_kmeans_q8` at group 256 (2.188 bpw) as the
-      reference baseline-to-beat for future candidate schemes — it
-      undercuts the old 2.375 bpw reference and matches our candidates'
-      bitrate band.
+- [x] Quant R&D: candidate C — "Lloyd-fit ternary" — LANDED 2026-09-20 as
+      `ternary_lloyd` / `ternary_lloyd_ds` (65 tests green). Verdict: YES,
+      fitting is the ingredient. At EXACTLY matched bitrate, Lloyd fitting
+      beats the absmean heuristic by **+1.37 dB symmetric** (6.93 vs 5.56 @
+      1.710 bpw) and **+1.41 dB dual-scale** (7.00 vs 5.59 @ 1.835 bpw).
+      Both are new Pareto-frontier points; on skewed tensors
+      ternary_lloyd_ds (6.55 @ 1.835) > ternary_lloyd (6.11 @ 1.710).
+      ternary_lloyd is now the ternary reference (beats T1+out n=2 at a
+      LOWER bitrate). The ~2.19 bpw Lloyd crossover still holds: below it,
+      fit the ternary codebook; at/above it, use 4-centroid Lloyd.
+- [ ] Quant R&D: adopt `ternary_lloyd` (1.710 bpw) as the ternary reference
+      baseline-to-beat for future candidate schemes, alongside
+      `int2_kmeans_q8` at group 256 (2.188 bpw) as the classical reference.
 - [x] Quant R&D: op-count model of ternary matmul (add/sub per MAC) vs
       int2 codebook-lookup + fp dequant-multiply, for the bandwidth-bound
       Apple Silicon decode regime — landed 2026-09-20 as
@@ -192,6 +195,14 @@ measuring where quality actually breaks.
 - [ ] Benchmark harness: quality-vs-quant curves on small models to validate the pipeline
 - [ ] Track BitNet.cpp releases + any 70B ternary model announcement
 - [ ] Track oQ/JANG releases and 2-bit MoE quality reports
+- [ ] Quant R&D: re-run the op-count energy/speed comparison with
+      ternary_lloyd as the ternary reference — fitted ternary may have a
+      different zero-rate than ternary_uniform, and the opcount numbers
+      used the uniform variant's measured sparsity (check whether the
+      1.36x / 3.0x figures move)
+- [ ] Quant R&D: diagnostic — decompose the +1.4 dB Lloyd win into
+      threshold adaptation vs scale refit (fix one, vary the other) to
+      find the cheaper approximation of the fitted optimum
 
 ## Ground rules for this research track
 
