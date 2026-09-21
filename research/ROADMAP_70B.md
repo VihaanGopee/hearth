@@ -491,24 +491,32 @@ measuring where quality actually breaks.
       verdict needs the full-model slice below.
 - [ ] Quant R&D: OBQ full-model slice — apply quantize_layer_obq to all
       48 linear layers (one capture forward already gets every layer's
-      X; per-layer Hessian inverse + block update, ~10-15 min on this
-      VM) and measure ppl vs the 795.96 naive anchor at g128. Wire as
-      `ppl.py --obq-all` reusing quantize_model's target loop. Decision
-      rule: if full-model OBQ exits collapse territory materially
-      (< ~400 ppl), the fidelity path is alive; if delta ~0, the
-      Hessian-second-order story is exhausted on GPT-2 124M at this
+      X; per-layer Hessian inverse + block update) and measure ppl vs
+      the 795.96 naive anchor at g128. PROTOCOL (checkpointed, per
+      the standing direction): run `python3 -m src.quant_rnd.ppl
+      research/data/gpt2.safetensors --obq-all --obq-ckpt-dir
+      research/data/obq_ckpt --obq-max-layers N` (N sized to the
+      session budget, e.g. 12–24); each run checkpoints and prints the
+      resume point — keep running chunks until the manifest shows
+      48/48, then the run assembles and prints the verdict itself.
+      Decision rule: if full-model OBQ exits collapse territory
+      materially (< ~400 ppl), the fidelity path is alive; if delta ~0,
+      the Hessian-second-order story is exhausted on GPT-2 124M at this
       scale and the honest conclusion is logged.
-- [ ] Quant R&D: unblock the full-model OBQ measurement — the 48-layer
-      `ppl.py --obq-all` run cannot finish inside a ~25-min session
-      (two runs killed by the execution timeout on 2026-09-21; machinery
-      is committed at 7cb610e, 179 tests green — only the measurement
-      is missing). Candidate unblockers, none attempted yet: (a)
-      checkpoint per-block quantized weights to research/data/ so the
-      run resumes across sessions; (b) detached nohup runner writing to
-      durable storage, polled by later sessions (beware /tmp wipes on
-      service restarts); (c) fewer eval tokens for the measurement run
-      only (pre-registered methodology deviation). Build ONE of these
-      (small, tested, committed) before re-attempting the measurement.
+- [x] Quant R&D: unblock the full-model OBQ measurement — PARTIALLY
+      LANDED 2026-09-21 as `src/quant_rnd/obq_ckpt.py` + `ppl.py
+      --obq-all --obq-ckpt-dir DIR [--obq-max-layers N]` (commit
+      6fa4635, 202 tests green, mirrored). Per-layer quantized weights
+      checkpoint to research/data/obq_ckpt/ (gitignored) as each layer
+      finishes; runs skip done layers and resume from the manifest,
+      which refuses to mix incompatible params (group_size / damp /
+      n_iter / calibration-text hash). Resumed assembly is
+      bit-identical to an in-memory --obq-all (test-pinned). First
+      chunk (12 of 48 layers) launched this session; when the last
+      layer lands the run assembles the model and prints the verdict
+      vs the 795.96 anchor with the <~400 decision rule. Remaining
+      work is just running the chunks — the full-model slice item
+      below is now unblocked and carries the protocol note.
 - [ ] Quant R&D: 1-step Lloyd re-fit of centroids is already the cheap
       fitted-ternary encoder; check whether its measured 0.41 zero-rate
       (vs 0.31 uniform) can be raised toward 0.5 (more sparsity -> more
