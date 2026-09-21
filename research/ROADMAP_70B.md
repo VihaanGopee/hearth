@@ -442,6 +442,17 @@ measuring where quality actually breaks.
       (< ~400 ppl), the fidelity path is alive; if delta ~0, the
       Hessian-second-order story is exhausted on GPT-2 124M at this
       scale and the honest conclusion is logged.
+- [ ] Quant R&D: unblock the full-model OBQ measurement — the 48-layer
+      `ppl.py --obq-all` run cannot finish inside a ~25-min session
+      (two runs killed by the execution timeout on 2026-09-21; machinery
+      is committed at 7cb610e, 179 tests green — only the measurement
+      is missing). Candidate unblockers, none attempted yet: (a)
+      checkpoint per-block quantized weights to research/data/ so the
+      run resumes across sessions; (b) detached nohup runner writing to
+      durable storage, polled by later sessions (beware /tmp wipes on
+      service restarts); (c) fewer eval tokens for the measurement run
+      only (pre-registered methodology deviation). Build ONE of these
+      (small, tested, committed) before re-attempting the measurement.
 - [ ] Quant R&D: 1-step Lloyd re-fit of centroids is already the cheap
       fitted-ternary encoder; check whether its measured 0.41 zero-rate
       (vs 0.31 uniform) can be raised toward 0.5 (more sparsity -> more
