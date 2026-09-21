@@ -72,7 +72,8 @@ class TestSchemes(unittest.TestCase):
     def test_registry_has_baselines_and_candidates(self):
         self.assertEqual(set(SCHEMES),
                          {"ternary_uniform", "ternary_lloyd", "ternary_lloyd_ds",
-                          "ternary_1step", "ternary_1step_ds",
+                          "ternary_1step", "ternary_1step_sp",
+                          "ternary_1step_ds",
                           "int2_symmetric", "int2_kmeans",
                           "int2_kmeans_q8",
                           "int2_outlier_retain", "dual_scale_ternary",
@@ -1007,6 +1008,80 @@ class TestTernary1Step(unittest.TestCase):
         self.assertGreater(zr_1, zr_u)
         self.assertGreaterEqual(zr_1, 0.35)
         self.assertLessEqual(zr_1, 0.50)
+
+
+class TestThresholdBiasedLloyd(unittest.TestCase):
+    """Threshold-widening (thresh_factor) for the zero-rate sparsity probe.
+
+    Raises ternary_1step's zero bin (thresholds at +/-k*s/2) with the
+    fit staying L2-optimal under the widened thresholds - the honest
+    sparse encoder for the compute-side (add-skip) story.
+    """
+
+    def setUp(self):
+        rng = np.random.default_rng(7)
+        self.w = synthetic_weights(rng, n_groups=64)
+        wp, _ng, _n = _groups(self.w)
+        self.g = wp[0]
+
+    def zero_rate(self, w, k):
+        return float(np.mean(quantize_ternary_1step(w, thresh_factor=k).codes == 0))
+
+    def test_default_factor_is_bit_identical(self):
+        a = _ternary_lloyd_fit(self.g, dual=False)
+        b = _ternary_lloyd_fit(self.g, dual=False, thresh_factor=1.0)
+        self.assertEqual(a[0], b[0])
+        self.assertEqual(a[1], b[1])
+        np.testing.assert_array_equal(a[2], b[2])
+        qa = quantize_ternary_1step(self.w)
+        qb = quantize_ternary_1step(self.w, thresh_factor=1.0)
+        np.testing.assert_array_equal(qa.codes, qb.codes)
+        np.testing.assert_array_equal(qa.scales, qb.scales)
+
+    def test_widening_raises_zero_rate_monotonically(self):
+        zr_10 = self.zero_rate(self.w, 1.0)
+        zr_12 = self.zero_rate(self.w, 1.2)
+        zr_20 = self.zero_rate(self.w, 2.0)
+        self.assertLessEqual(zr_10, zr_12)
+        self.assertLessEqual(zr_12, zr_20)
+        self.assertGreater(zr_20, zr_10)  # strictly more sparse somewhere
+
+    def test_widened_decode_stays_symmetric_ternary(self):
+        # The sparse variant is still {-s, 0, +s} per group: one scale,
+        # codes in {-1, 0, 1}, reconstruct decodes the symmetric branch.
+        q = quantize_ternary_1step(self.w, thresh_factor=1.2)
+        self.assertEqual(q.name, "ternary_1step")
+        self.assertTrue(set(np.unique(q.codes)) <= {-1, 0, 1})
+        self.assertEqual(q.scales.shape[1], 1)
+        r = q.reconstruct()
+        n, g = q.codes.shape[0], q.group_size
+        group_id = np.arange(n) // g
+        np.testing.assert_allclose(
+            r, q.codes.astype(np.float32) * q.scales[group_id, 0],
+            rtol=1e-6)
+
+    def test_sparse_scheme_registered_and_matched_bitrate(self):
+        fn = SCHEMES["ternary_1step_sp"]
+        q = fn(self.w, 128)
+        # Matched 1.710 bpw: widening moves zero-rate, not bitrate.
+        self.assertAlmostEqual(q.bpw, math.log2(3) + 16 / 128, places=6)
+        self.assertAlmostEqual(q.bpw,
+                               quantize_ternary_1step(self.w).bpw,
+                               places=9)
+        zr_sp = float(np.mean(q.codes == 0))
+        zr_1 = float(np.mean(quantize_ternary_1step(self.w).codes == 0))
+        self.assertGreater(zr_sp, zr_1)
+        # Seed 7 synthetic: factor 1.2 lands in the 0.45-0.60 band
+        # (0.514 on real GPT-2 weights); assert it is genuinely sparser
+        # without claiming the exact real-weight number here.
+        self.assertGreater(zr_sp, 0.44)
+
+    def test_all_zero_input_still_safe(self):
+        q = quantize_ternary_1step(np.zeros(512, dtype=np.float32),
+                                   thresh_factor=2.0)
+        r = q.reconstruct()
+        self.assertTrue(np.all(np.isfinite(r)))
+        self.assertTrue(np.all(r == 0.0))
 
 
 class TestTernary1StepDs(unittest.TestCase):

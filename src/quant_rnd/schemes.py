@@ -41,8 +41,17 @@ Candidates (ours, to be validated):
   ternary_1step - dual=True, default n_iter=1 - identical 1.835 bpw to
   ternary_lloyd_ds. Tests whether few fit iterations also capture the
   dual-Lloyd win on skewed tensors.
+- ternary_1step_sp ("sparse 1-step"): ternary_1step with a widened zero
+  bin (thresh_factor=1.2, threshold-biased Lloyd): raises the measured
+  zero-rate from ~0.41 to ~0.51 on real GPT-2 weights at matched
+  1.710 bpw. The compute-side candidate: more zeros = more add-skips in
+  a ternary kernel. VERDICT 2026-09-21: NEGATIVE - ppl 45242 vs 2764
+  for the 1-step baseline (16x blowup) at only -0.05 dB SQNR. The
+  fidelity cliff is razor-sharp; sparsity that SQNR can't see still
+  kills the model. Kept as the cost-of-0.5-sparsity reference.
 """
 from dataclasses import dataclass, field
+from functools import partial
 
 import numpy as np
 
@@ -346,21 +355,29 @@ def quantize_int2_kmeans_q8(w: np.ndarray, group_size: int = GROUP_SIZE,
 
 def _ternary_lloyd_fit(g: np.ndarray, dual: bool,
                        n_iter: int = 20,
+                       thresh_factor: float = 1.0,
                        history: list | None = None) -> tuple:
     """Constrained 1-D Lloyd for a ternary codebook.
 
     Fits {-s, 0, +s} (or dual-scale {-s_neg, 0, +s_pos}) to one group by
     alternating assignment (nearest of the three codebook values, i.e.
-    thresholds at +/-s/2) and refit: given the assignment, the optimal
-    symmetric s is the mean |x| over non-zero-assigned weights (L2
-    optimality), and the dual scales are the per-side conditional means.
-    Deterministic; no random restarts. Returns (s_pos, s_neg, codes).
+    thresholds at +/-thresh_factor*s/2) and refit: given the assignment,
+    the optimal symmetric s is the mean |x| over non-zero-assigned
+    weights (L2 optimality), and the dual scales are the per-side
+    conditional means. Deterministic; no random restarts. Returns
+    (s_pos, s_neg, codes).
+
+    thresh_factor > 1 widens the zero bin (threshold-biased Lloyd): the
+    fit stays L2-optimal *under the widened thresholds*, so this is the
+    honest sparse encoder. 1.0 reproduces the classic nearest-centroid
+    assignment exactly (bit-identical default).
 
     If `history` is a list, the (s_pos, s_neg) state is appended after the
     heuristic initialization and after every scale update, so callers can
     decompose the fit gain step by step (used by diagnose.py).
     """
     g = g.astype(np.float64)
+    t = 0.5 * thresh_factor
     if dual:
         pos = g[g > 0]
         neg = g[g < 0]
@@ -371,8 +388,8 @@ def _ternary_lloyd_fit(g: np.ndarray, dual: bool,
     if history is not None:
         history.append((s_pos, s_neg))  # heuristic init (absmean)
     for _ in range(n_iter):
-        a_pos = g > 0.5 * s_pos
-        a_neg = g < -0.5 * s_neg
+        a_pos = g > t * s_pos
+        a_neg = g < -t * s_neg
         new_pos = float(g[a_pos].mean()) if a_pos.any() else s_pos
         new_neg = float(-g[a_neg].mean()) if a_neg.any() else s_neg
         if not dual:
@@ -390,8 +407,8 @@ def _ternary_lloyd_fit(g: np.ndarray, dual: bool,
     s_pos = max(s_pos, 1e-12)  # all-zero / one-sided group guards
     s_neg = max(s_neg, 1e-12)
     codes = np.zeros(g.shape[0], dtype=np.int8)
-    codes[g > 0.5 * s_pos] = 1
-    codes[g < -0.5 * s_neg] = -1
+    codes[g > t * s_pos] = 1
+    codes[g < -t * s_neg] = -1
     return s_pos, s_neg, codes
 
 
@@ -442,7 +459,8 @@ def quantize_ternary_lloyd_ds(w: np.ndarray, group_size: int = GROUP_SIZE,
                        group_size=group_size)
 
 
-def quantize_ternary_1step(w: np.ndarray, group_size: int = GROUP_SIZE) -> QuantResult:
+def quantize_ternary_1step(w: np.ndarray, group_size: int = GROUP_SIZE,
+                           thresh_factor: float = 1.0) -> QuantResult:
     """Candidate D (ours): "1-step Lloyd" ternary.
 
     The diagnose.py decomposition showed the +1.4 dB ternary_lloyd win
@@ -461,12 +479,18 @@ def quantize_ternary_1step(w: np.ndarray, group_size: int = GROUP_SIZE) -> Quant
     tensor, because decoding codes chosen for s0 at the larger refit
     scale is inconsistent. Reassigning at the refit thresholds is the
     honest encoder and is what this scheme does.)
+
+    thresh_factor (default 1.0) widens the zero bin for the sparsity
+    probe (threshold-biased Lloyd - the fit stays L2-optimal under the
+    widened thresholds); it changes zero-rate but not bitrate, so
+    widened variants compare at matched bpw.
     """
     wp, n_groups, n = _groups(w, group_size)
     scales = np.zeros((n_groups, 1), dtype=np.float32)
     codes = np.zeros(n_groups * group_size, dtype=np.int8)
     for gi in range(n_groups):
-        s_pos, _s_neg, c = _ternary_lloyd_fit(wp[gi], dual=False, n_iter=1)
+        s_pos, _s_neg, c = _ternary_lloyd_fit(wp[gi], dual=False, n_iter=1,
+                                              thresh_factor=thresh_factor)
         scales[gi, 0] = np.float32(s_pos)
         codes[gi * group_size:(gi + 1) * group_size] = c
     codes = codes[:n]
@@ -509,6 +533,18 @@ SCHEMES = {
     "ternary_lloyd": quantize_ternary_lloyd,
     "ternary_lloyd_ds": quantize_ternary_lloyd_ds,
     "ternary_1step": quantize_ternary_1step,
+    # Sparse twin of ternary_1step: threshold-biased Lloyd (1-step fit
+    # under widened zero-bin thresholds) pushes the measured zero-rate
+    # from ~0.41 to ~0.51 on GPT-2 weights at matched 1.710 bpw
+    # (2026-09-21 sparsity probe: factor 1.2 costs only -0.05 dB SQNR).
+    # VERDICT (negative): the ppl cliff is razor-sharp - ppl 45242 on
+    # eval_text1 vs 2764 for ternary_1step (16x blowup) at that -0.05 dB
+    # delta. Zero-rate 0.5 is NOT free; sparsity gains that SQNR can't
+    # see still kill the model. Kept as the reference for what 0.5
+    # zero-rate costs, and for the energy-ratio table (3.51x -> 4.22x
+    # energy-proxy advantage over int2_kmeans_q8 - unrealizable at this
+    # fidelity). The decode is the plain symmetric ternary path.
+    "ternary_1step_sp": partial(quantize_ternary_1step, thresh_factor=1.2),
     "ternary_1step_ds": quantize_ternary_1step_ds,
     "int2_symmetric": quantize_int2_symmetric,
     "int2_kmeans": quantize_int2_kmeans,

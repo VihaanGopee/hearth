@@ -493,6 +493,21 @@ measuring where quality actually breaks.
       the Qwen3.6 MTP variant
 - [ ] Re-check HF for a prebuilt oQ2/oQ2.5 35B-A3B MLX upload (Jundot org);
       if one appears at ~12.6 GB, re-evaluate vs IQ2_M on quality-per-GB
+- [ ] Quant R&D: vmlx "Smelt" mode (partial expert loading) — NEW 2026-09-21
+      from the JANG release watch: vmlx README documents `--smelt` /
+      `--smelt-experts N` for MoE models that don't fit in RAM - keeps the
+      backbone resident, loads a subset of experts/layer from SSD, biases
+      routing toward resident experts. Benchmark (Nemotron-Cascade-2-30B-A3B
+      -JANG_4M, M3 Ultra 128 GB): 50% experts -> 9.5 GB RAM (-45%), 66.5
+      tok/s (vs 17.4 GB / 89.9 baseline); 25% -> 5.6 GB (-68%).
+      Implication for the 35B-A3B path: the oQ2 35B-A3B (~12.6 GB) is
+      over-budget fully resident but could fit 16 GB under Smelt-50 at
+      ~2/3 speed - changes the "borderline" classification. Also of note
+      from the same watch: oQ+ adds GPTQ weight optimization before
+      quantization (sensitivity-driven bit allocation, batched over all
+      routed experts), and JANG profiles are now explicit (JANG_2M/2L/3M/
+      4M/6M, attn 8-bit / MLP 2-6-bit). Needs Justin's Mac: install vmlx,
+      serve the oQ2 35B-A3B with --smelt 50, measure quality + tok/s.
 - [x] Quant R&D: re-run the op-count energy/speed comparison with the
       fitted ternary reference — landed 2026-09-21 as
       `test_fitted_ternary_opcount_reference` (81 tests green). Verdict:
@@ -650,11 +665,24 @@ measuring where quality actually breaks.
       vs the 795.96 anchor with the <~400 decision rule. Remaining
       work is just running the chunks — the full-model slice item
       below is now unblocked and carries the protocol note.
-- [ ] Quant R&D: 1-step Lloyd re-fit of centroids is already the cheap
+- [x] Quant R&D: 1-step Lloyd re-fit of centroids is already the cheap
       fitted-ternary encoder; check whether its measured 0.41 zero-rate
       (vs 0.31 uniform) can be raised toward 0.5 (more sparsity -> more
       add-skip) without ppl collapse, e.g. threshold widening with the
-      n_iter=20 scale.
+      n_iter=20 scale. ANSWERED NO 2026-09-21 (sharp honest negative):
+      `_ternary_lloyd_fit` gained a `thresh_factor` kwarg (threshold-biased
+      Lloyd, default 1.0 bit-identical, 5 new tests) and
+      `ternary_1step_sp` (k=1.2) is registered in SCHEMES. Probe on all 48
+      GPT-2 linear matrices, g128: k=1.2 -> zero-rate 0.419 -> 0.514 at
+      only -0.05 dB SQNR (6.52 -> 6.47). Perplexity (eval_text1, 406
+      tokens): **45242 @ 1.710 bpw vs 2764 for ternary_1step** - a 16x
+      blowup from a -0.05 dB fidelity delta. The collapse-territory
+      cliff is razor-sharp (same phenomenon as the 25x full-vs-1step
+      Lloyd gap at 0.2 dB): even the ~0.4 zero-rate of ternary_1step is
+      load-bearing, and SQNR cannot see the damage. Zero-rate 0.5 is not
+      a free add-skip; sparsity must come from the fit itself, not the
+      threshold. Energy-proxy side (unrealizable at this fidelity):
+      3.51x -> 4.22x over int2_kmeans_q8 at zero-rate 0.514.
 - [x] Quant R&D: re-run the opcount energy/speed comparison with the
       dual fitted reference (`ternary_1step_ds` at n_iter=2, measured
       zero-rate per side) — LANDED 2026-09-21 as
