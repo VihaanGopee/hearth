@@ -232,6 +232,10 @@ def generate(base_url, model, prompt, num_predict, num_ctx, timeout=300):
         "model": model,
         "prompt": prompt,
         "stream": False,
+        # Qwen3-family models think by default; the <think> block would eat
+        # the token budget (quality checks use num_predict=64) and pollute
+        # the speed measurement. Disable it for a clean, comparable number.
+        "think": False,
         "options": {
             "num_predict": num_predict,
             "temperature": 0,

@@ -228,6 +228,7 @@ class TestGenerateHttp(unittest.TestCase):
         self.assertEqual(body["model"], "qwen3:8b")
         self.assertEqual(body["prompt"], "hi")
         self.assertFalse(body["stream"])
+        self.assertFalse(body["think"])
         self.assertEqual(body["options"]["num_predict"], 256)
         self.assertEqual(body["options"]["temperature"], 0)
         self.assertEqual(body["options"]["num_ctx"], 2048)
