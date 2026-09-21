@@ -9,6 +9,8 @@ Baselines (approximate llama.cpp-style behavior, not bit-exact):
 - int2_symmetric: plain 2-bit symmetric.
 - int2_outlier_retain: 2-bit + top-k% magnitudes kept in fp16
   (mixed-precision flavor of the oQ/JANG idea).
+- int2_kmeans: classical 1-D Lloyd 2-bit (4 fitted centroids per group) -
+  the fair comparison naive symmetric int2 lacks.
 
 Candidates (ours, to be validated):
 - dual_scale_ternary ("DST"): asymmetric ternary. Real weight tensors are
@@ -53,6 +55,9 @@ class QuantResult:
             s = self.scales[gi]
             if self.name == "dual_scale_ternary":
                 rec = np.where(c > 0, s[0], np.where(c < 0, -s[1], 0.0))
+            elif self.name == "int2_kmeans":
+                # s holds the 4 Lloyd centroids; codes index into them.
+                rec = s[c.astype(np.int64)]
             else:
                 rec = c * s[0]
             out[mask] = rec
@@ -179,9 +184,51 @@ def quantize_ternary_outlier(w: np.ndarray, group_size: int = GROUP_SIZE,
     return base
 
 
+def _lloyd_1d(x: np.ndarray, k: int = 4, n_iter: int = 20) -> np.ndarray:
+    """Deterministic 1-D Lloyd's algorithm; returns k centroids.
+
+    Quantile initialization keeps it deterministic (no random restarts);
+    empty clusters keep their previous centroid.
+    """
+    qs = (np.arange(k) + 0.5) / k
+    cent = np.quantile(x.astype(np.float64), qs)
+    for _ in range(n_iter):
+        assign = np.abs(x[:, None] - cent[None, :]).argmin(axis=1)
+        new = cent.copy()
+        for j in range(k):
+            m = assign == j
+            if m.any():
+                new[j] = x[m].mean()
+        if np.allclose(new, cent):
+            break
+        cent = new
+    return cent.astype(np.float32)
+
+
+def quantize_int2_kmeans(w: np.ndarray, group_size: int = GROUP_SIZE,
+                         n_iter: int = 20) -> QuantResult:
+    """Baseline (classical): per-group Lloyd 2-bit, 4 fitted centroids.
+
+    The fair classical comparison naive int2_symmetric lacks: instead of a
+    fixed symmetric codebook stretched by the group amax (which outliers
+    destroy), Lloyd fits 4 centroids to each group's actual distribution.
+    Honest cost: 4 fp16 centroids per group -> 2.5 bpw, heavier than the
+    ~2.06 bpw candidates. The bench prints bpw beside SQNR so comparisons
+    stay honest about the bitrate gap.
+    """
+    wp, n_groups, n = _groups(w, group_size)
+    centroids = np.stack([_lloyd_1d(g, n_iter=n_iter) for g in wp])
+    codes = np.abs(wp[:, :, None]
+                   - centroids[:, None, :]).argmin(axis=2)
+    codes = codes.astype(np.int8).ravel()[:n]
+    bpw = 2.0 + _scale_overhead(4, group_size)
+    return QuantResult("int2_kmeans", codes, centroids, bpw)
+
+
 SCHEMES = {
     "ternary_uniform": quantize_ternary_uniform,
     "int2_symmetric": quantize_int2_symmetric,
+    "int2_kmeans": quantize_int2_kmeans,
     "int2_outlier_retain": quantize_int2_outlier_retain,
     "dual_scale_ternary": quantize_dual_scale_ternary,
     "ternary_outlier": quantize_ternary_outlier,

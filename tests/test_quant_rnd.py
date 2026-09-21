@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.quant_rnd import (
     SCHEMES,
     quantize_dual_scale_ternary,
+    quantize_int2_kmeans,
     quantize_int2_symmetric,
     quantize_ternary_outlier,
     quantize_ternary_uniform,
@@ -29,7 +30,7 @@ class TestSchemes(unittest.TestCase):
 
     def test_registry_has_baselines_and_candidates(self):
         self.assertEqual(set(SCHEMES),
-                         {"ternary_uniform", "int2_symmetric",
+                         {"ternary_uniform", "int2_symmetric", "int2_kmeans",
                           "int2_outlier_retain", "dual_scale_ternary",
                           "ternary_outlier"})
 
@@ -77,6 +78,44 @@ class TestSchemes(unittest.TestCase):
         dst = quantize_dual_scale_ternary(w)
         self.assertGreater(sqnr_db(w, dst.reconstruct()),
                            sqnr_db(w, uni.reconstruct()) + 1.0)
+
+    def test_int2_kmeans_codes_valid(self):
+        q = quantize_int2_kmeans(self.w)
+        self.assertTrue(set(np.unique(q.codes)) <= {0, 1, 2, 3})
+
+    def test_int2_kmeans_bpw(self):
+        # 2-bit payload + 4 fp16 centroids per 128-group = 2.5 bpw.
+        # Heavier than the ~2.06 bpw candidates; honest, and stated in docs.
+        q = quantize_int2_kmeans(self.w)
+        self.assertAlmostEqual(q.bpw, 2.0 + 4 * 16 / 128, places=6)
+        self.assertEqual(q.scales.shape, (8, 4))
+
+    def test_int2_kmeans_deterministic(self):
+        a = quantize_int2_kmeans(self.w)
+        b = quantize_int2_kmeans(self.w)
+        self.assertTrue(np.array_equal(a.codes, b.codes))
+        self.assertTrue(np.array_equal(a.scales, b.scales))
+
+    def test_int2_kmeans_reconstruct_is_centroid_lookup(self):
+        q = quantize_int2_kmeans(self.w)
+        r = q.reconstruct()
+        n = self.w.shape[0]
+        group_id = np.arange(n) // 128
+        expected = q.scales[group_id, q.codes.astype(int)]
+        self.assertTrue(np.allclose(r, expected))
+
+    def test_int2_kmeans_beats_naive_int2_on_outliers(self):
+        # The whole point of the baseline: fitting centroids to the group
+        # distribution (instead of stretching a fixed codebook by amax)
+        # recovers the body that outliers destroy.
+        k = quantize_int2_kmeans(self.w)
+        i = quantize_int2_symmetric(self.w)
+        self.assertGreater(sqnr_db(self.w, k.reconstruct()),
+                           sqnr_db(self.w, i.reconstruct()) + 3.0)
+
+    def test_int2_kmeans_constant_input_exact(self):
+        q = quantize_int2_kmeans(np.full(256, 0.7, dtype=np.float32))
+        self.assertTrue(np.allclose(q.reconstruct(), 0.7))
 
     def test_ternary_outlier_stores_outliers_exactly(self):
         q = quantize_ternary_outlier(self.w)

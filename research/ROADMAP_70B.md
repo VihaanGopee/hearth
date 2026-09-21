@@ -98,14 +98,23 @@ measuring where quality actually breaks.
       ternary_outlier 6.73 dB @ 2.06 bpw > int2_symmetric 2.51 dB @ 2.13 bpw;
       dual_scale_ternary beats symmetric ternary on skewed tensors.
       PROXY ONLY — not real-model perplexity.
+- [x] Quant R&D: K-means (Lloyd) 2-bit baseline landed 2026-09-20
+      (`int2_kmeans`, 4 fitted centroids/group, 2.5 bpw, 32 tests green).
+      Synthetic result: 9.68 dB — best SQNR, but at the highest bitrate.
+      Honest read: the classical baseline beats our candidates on synthetic
+      SQNR; they are cheaper in bpw. Follow-up below.
+- [ ] Quant R&D: matched-bitrate k-means variant (quantize the 4 centroids
+      to 8-bit -> ~2.25 bpw) to test whether ternary_outlier still loses to
+      the classical baseline at equal bitrate
 - [ ] Quant R&D: validate candidates on a real tiny model (60–130M params,
       CPU-friendly) — real perplexity vs the synthetic SQNR ranking
 - [ ] Quant R&D: sweep outlier_frac / n_outliers for the Pareto frontier
       (SQNR vs bpw) before picking a kernel target
 - [ ] Quant R&D: if a candidate holds up on real perplexity, design the
       ggml CPU kernel (ternary add/sub path) + upstream write-up/PR
-- [ ] Quant R&D: add a K-means (Lloyd) 2-bit baseline — the fair classical
-      comparison the current naive int2 baseline lacks
+- [x] Quant R&D: add a K-means (Lloyd) 2-bit baseline — the fair classical
+      comparison the current naive int2 baseline lacks (landed 2026-09-20,
+      `int2_kmeans`, 2.5 bpw; see result note above)
 - [ ] Check whether current Ollama release supports TQ1_0/TQ2_0 GGUFs
 - [ ] Survey HuggingFace for 70B IQ1_M / TQ1_0 GGUFs; record sizes + quality reports
 - [ ] Set `OLLAMA_KV_CACHE_TYPE=q8_0` in run.sh and document
