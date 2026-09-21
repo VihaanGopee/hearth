@@ -20,9 +20,12 @@ with the same 4-centroid Lloyd codebook + 8-bit codebook rounding as
 int2_kmeans_q8, so OBQ-vs-naive comparisons are at matched bitrate
 (2.375 bpw @ g128).
 
-This slice handles ONE layer at a time (per the backlog item's slicing);
-the caller supplies the layer's fp32 input activations X (see
-fisher.capture_linear_inputs).
+This slice handles ONE layer at a time via quantize_layer_obq (per the
+backlog item's slicing); quantize_layers_obq applies it over a whole
+model (or a named subset) with activations from a single shared forward
+pass — each layer still gets its own layer-local Hessian, the GPTQ
+convention. The caller supplies the layer's fp32 input activations X
+(see fisher.capture_linear_inputs).
 
 Honest caveats:
 - Calibration: H is built from a single forward pass over the eval text
@@ -114,6 +117,44 @@ def quantize_layer_obq(W: np.ndarray, X: np.ndarray,
             Wc[rest, :] -= Hinv[rest, rows] @ E
     bpw = 2.0 + 4 * 8 / group_size + _scale_overhead(1, group_size)
     return Wq.astype(np.float32), bpw
+
+
+def quantize_layers_obq(linear: dict, inputs: dict,
+                        group_size: int = 128,
+                        damp_frac: float = 0.01,
+                        n_iter: int = 20,
+                        only_names: set | None = None) -> tuple:
+    """Quantize several (d_in, d_out) weight matrices with OBQ.
+
+    `linear`: {tensor name: fp32 weight}; `inputs`: {tensor name:
+    (T, d_in) input activations} from ONE shared forward pass (see
+    fisher.capture_linear_inputs) — each layer is compensated against
+    its OWN layer Hessian, the GPTQ convention. `only_names` restricts
+    to a subset of names (KeyError on unknown names). Returns
+    ({name: quantized float32}, bpw); bpw is identical for every layer
+    by construction (2.375 @ g128, the int2_kmeans_q8 bookkeeping).
+    The input dicts are not modified.
+    """
+    if only_names is not None:
+        unknown = set(only_names) - set(linear)
+        if unknown:
+            raise KeyError(f"only_names has unknown tensors: "
+                           f"{sorted(unknown)}")
+        targets = sorted(set(only_names))
+    else:
+        targets = sorted(linear)
+    if not targets:
+        raise ValueError("no layers selected")
+    out = {}
+    bpw = None
+    for name in targets:
+        if name not in inputs:
+            raise KeyError(f"no captured activations for {name!r}")
+        Wq, bpw = quantize_layer_obq(linear[name], inputs[name],
+                                     group_size=group_size,
+                                     damp_frac=damp_frac, n_iter=n_iter)
+        out[name] = Wq
+    return out, bpw
 
 
 def hessian_weighted_sse(W: np.ndarray, Wq: np.ndarray,

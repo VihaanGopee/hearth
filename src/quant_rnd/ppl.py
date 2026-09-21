@@ -121,34 +121,62 @@ def quantize_model(tensors: dict, scheme_name: str,
     return out, bpw
 
 
+def quantize_model_obq(tensors: dict, token_ids,
+                       group_size: int = GROUP_SIZE,
+                       damp_frac: float = 0.01,
+                       only_names: set | None = None) -> tuple:
+    """OBQ error compensation over all (or a subset of) linear layers.
+
+    Returns (weights, bpw) like quantize_model: a new {name: float32
+    ndarray} dict with the same keys and shapes as the input. One shared
+    fp32 forward pass captures every linear layer's input activations
+    (fisher.capture_linear_inputs); each target layer is then quantized
+    with obq.quantize_layers_obq (GPTQ-style block update with the
+    int2_kmeans_q8-equivalent per-column codebook, same 2.375 bpw @ g128
+    as the naive anchor, so the perplexity delta is apples-to-apples).
+    Non-target tensors pass through as float32 copies. The input dict is
+    not modified. `only_names` restricts quantization to a subset of
+    linear names (KeyError on unknown/non-linear names); None (default)
+    quantizes every linear matrix.
+    """
+    from .fisher import capture_linear_inputs
+    from .obq import quantize_layers_obq
+    linear = linear_weight_tensors(tensors)
+    if only_names is not None:
+        unknown = set(only_names) - set(tensors)
+        if unknown:
+            raise KeyError(f"only_names has unknown tensors: "
+                           f"{sorted(unknown)}")
+        non_linear = set(only_names) - set(linear)
+        if non_linear:
+            raise KeyError(f"only_names are not linear weight matrices: "
+                           f"{sorted(non_linear)}")
+    inputs = capture_linear_inputs(tensors, token_ids)
+    qobq, bpw = quantize_layers_obq(linear, inputs, group_size=group_size,
+                                    damp_frac=damp_frac,
+                                    only_names=only_names)
+    out = {n: np.ascontiguousarray(t, dtype=np.float32)
+           for n, t in tensors.items()}
+    for name, Wq in qobq.items():
+        out[name] = Wq.reshape(tensors[name].shape)
+    return out, bpw
+
+
 def quantize_one_layer_obq(tensors: dict, token_ids,
                            layer_name: str,
                            group_size: int = GROUP_SIZE,
                            damp_frac: float = 0.01) -> tuple:
     """Quantize ONE linear layer with OBQ error compensation; rest fp32.
 
-    Returns (weights, bpw) like quantize_model. The layer's fp32 input
-    activations are captured from one forward pass over `token_ids`
-    (fisher.capture_linear_inputs); the Hessian is built from them and
-    obq.quantize_layer_obq does the GPTQ-style block update with the
-    int2_kmeans_q8-equivalent per-column codebook (same 2.375 bpw @ g128
-    as the naive anchor, so the perplexity delta is apples-to-apples).
+    Returns (weights, bpw) like quantize_model. Delegates to
+    quantize_model_obq with only_names={layer_name}: the layer's fp32
+    input activations come from the shared capture forward pass, and the
+    Hessian math is obq.quantize_layer_obq's (GPTQ-style block update,
+    int2_kmeans_q8-equivalent per-column codebook, 2.375 bpw @ g128).
     """
-    from .fisher import capture_linear_inputs
-    from .obq import quantize_layer_obq
-    linear = linear_weight_tensors(tensors)
-    if layer_name not in linear:
-        raise KeyError(f"{layer_name!r} is not a linear weight matrix; "
-                       f"have {len(linear)} linears")
-    inputs = capture_linear_inputs(tensors, token_ids)
-    if layer_name not in inputs:
-        raise KeyError(f"no captured activations for {layer_name!r}")
-    Wq, bpw = quantize_layer_obq(linear[layer_name], inputs[layer_name],
-                                 group_size=group_size, damp_frac=damp_frac)
-    out = {n: np.ascontiguousarray(t, dtype=np.float32)
-           for n, t in tensors.items()}
-    out[layer_name] = Wq.reshape(tensors[layer_name].shape)
-    return out, bpw
+    return quantize_model_obq(tensors, token_ids, group_size=group_size,
+                              damp_frac=damp_frac,
+                              only_names={layer_name})
 
 
 def perplexity_of(tensors: dict, token_ids) -> float:
@@ -215,10 +243,26 @@ def parse_args(argv: list | None = None) -> argparse.Namespace:
                          "error compensation (GPTQ-style block update, "
                          "int2_kmeans_q8-equivalent codebook) instead of "
                          "the flat-array scheme; requires --one-layer")
+    ap.add_argument("--obq-all", action="store_true",
+                    help="run OBQ error compensation over ALL linear "
+                         "layers (the full-model slice of the OBQ backlog "
+                         "item; one shared capture forward, then per-layer "
+                         "GPTQ-style block update); ignores --schemes; "
+                         "mutually exclusive with --one-layer/--obq")
     ap.add_argument("--obq-damp", type=float, default=0.01,
-                    help="Hessian damping fraction for --obq "
+                    help="Hessian damping fraction for --obq/--obq-all "
                          "(default 0.01, the GPTQ convention)")
     return ap.parse_args(argv)
+
+
+def check_obq_args(args: argparse.Namespace) -> None:
+    """Validate the --obq/--obq-all/--one-layer combination; SystemExit
+    on misuse. Factored for testability."""
+    if args.obq and not args.one_layer:
+        raise SystemExit("--obq requires --one-layer NAME")
+    if args.obq_all and (args.obq or args.one_layer):
+        raise SystemExit("--obq-all is mutually exclusive with "
+                         "--one-layer/--obq")
 
 
 def main() -> None:
@@ -234,8 +278,18 @@ def main() -> None:
         text = f.read()
     ids = GPT2Tokenizer(args.tokenizer_dir).encode(text)
     print(f"eval text: {len(ids)} tokens")
-    if args.obq and not args.one_layer:
-        raise SystemExit("--obq requires --one-layer NAME")
+    check_obq_args(args)
+    if args.obq_all:
+        t0 = time.time()
+        print(f"OBQ-quantizing all linear layers "
+              f"(damp {args.obq_damp})...", flush=True)
+        qw, bpw = quantize_model_obq(tensors, ids,
+                                     args.group_size, args.obq_damp)
+        ppl = perplexity_of(qw, ids)
+        dt = time.time() - t0
+        print(f"{'int2_kmeans_q8+obq-all':<22} ppl {ppl:8.2f}  "
+              f"bpw {bpw:5.3f}  ({dt:5.1f} s)")
+        return
     if args.obq:
         t0 = time.time()
         print(f"OBQ-quantizing {args.one_layer} "

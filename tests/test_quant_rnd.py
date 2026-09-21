@@ -1237,6 +1237,75 @@ class TestGPT2ForwardMath(unittest.TestCase):
         np.testing.assert_allclose(got, ref, rtol=1e-5, atol=1e-5)
 
 
+class TestQuantizeLayersObq(unittest.TestCase):
+    """Multi-layer OBQ helper (obq.py) on synthetic activations.
+
+    No model forward needed: activations are synthetic (T, d_in) arrays,
+    so the whole loop is fast and unit-testable.
+    """
+
+    @staticmethod
+    def _linear():
+        rng = np.random.default_rng(7)
+        return {
+            "h.0.mlp.c_fc.weight":
+                rng.standard_normal((64, 32)).astype(np.float32),
+            "h.0.attn.c_proj.weight":
+                (0.1 * rng.standard_normal((32, 64))).astype(np.float32),
+        }
+
+    @staticmethod
+    def _inputs(linear):
+        rng = np.random.default_rng(11)
+        return {n: rng.standard_normal((48, w.shape[0])).astype(np.float32)
+                for n, w in linear.items()}
+
+    def test_all_layers_shapes_and_input_untouched(self):
+        lin = self._linear()
+        before = {k: v.copy() for k, v in lin.items()}
+        out, bpw = quantize_layers_obq(lin, self._inputs(lin),
+                                       group_size=16)
+        self.assertEqual(set(out), set(lin))
+        for k in lin:
+            self.assertEqual(out[k].shape, lin[k].shape)
+            np.testing.assert_array_equal(lin[k], before[k])
+            self.assertTrue(np.all(np.isfinite(out[k])), k)
+            self.assertFalse(np.allclose(out[k], lin[k]), k)
+        self.assertAlmostEqual(bpw, 2.0 + 4 * 8 / 16 + 16 / 16, places=9)
+
+    def test_single_target_equals_direct_call(self):
+        # Plumbing pin: the loop must not change the per-layer math vs
+        # quantize_layer_obq.
+        lin = self._linear()
+        inp = self._inputs(lin)
+        out, _ = quantize_layers_obq(lin, inp, group_size=16,
+                                     only_names={"h.0.mlp.c_fc.weight"})
+        self.assertEqual(set(out), {"h.0.mlp.c_fc.weight"})
+        direct, _ = quantize_layer_obq(lin["h.0.mlp.c_fc.weight"],
+                                       inp["h.0.mlp.c_fc.weight"],
+                                       group_size=16)
+        np.testing.assert_array_equal(out["h.0.mlp.c_fc.weight"], direct)
+
+    def test_unknown_only_names_raises(self):
+        lin = self._linear()
+        with self.assertRaises(KeyError):
+            quantize_layers_obq(lin, self._inputs(lin), group_size=16,
+                                only_names={"nope.weight"})
+
+    def test_missing_inputs_raises(self):
+        lin = self._linear()
+        inp = {n: a for n, a in self._inputs(lin).items()
+               if n != "h.0.attn.c_proj.weight"}
+        with self.assertRaises(KeyError):
+            quantize_layers_obq(lin, inp, group_size=16)
+
+    def test_empty_only_names_raises(self):
+        lin = self._linear()
+        with self.assertRaises(ValueError):
+            quantize_layers_obq(lin, self._inputs(lin), group_size=16,
+                                only_names=set())
+
+
 @unittest.skipUnless(os.path.exists(GPT2_WEIGHTS), "gpt2 weights not present")
 class TestGPT2RealWeights(unittest.TestCase):
     @classmethod
@@ -1288,12 +1357,15 @@ class TestGPT2RealWeights(unittest.TestCase):
 
 from src.quant_rnd.ppl import (
     DEFAULT_SWEEP,
+    check_obq_args,
     is_embedding,
     parse_args as ppl_parse_args,
     perplexity_of,
     quantize_model,
+    quantize_model_obq,
     quantize_one_layer_obq,
 )
+from src.quant_rnd.obq import quantize_layer_obq, quantize_layers_obq
 
 
 class TestQuantizeModel(unittest.TestCase):
@@ -1459,6 +1531,103 @@ class TestQuantizeModel(unittest.TestCase):
         self.assertFalse(args.quantize_embeddings)
         args = ppl_parse_args(["m.safetensors", "--quantize-embeddings"])
         self.assertTrue(args.quantize_embeddings)
+
+    @staticmethod
+    def _fake_capture():
+        # Deterministic synthetic activations matching the fake dict's
+        # linears; used to patch fisher.capture_linear_inputs so the
+        # full-model OBQ plumbing is testable without a real model.
+        def fake_cap(tensors, ids):
+            rng = np.random.default_rng(11)
+            lin = linear_weight_tensors(tensors)
+            return {n: rng.standard_normal((48, w.shape[0])).astype(np.float32)
+                    for n, w in lin.items()}
+        return fake_cap
+
+    def _patched_obq(self, fake, **kw):
+        import src.quant_rnd.fisher as fisher_mod
+        orig = fisher_mod.capture_linear_inputs
+        fisher_mod.capture_linear_inputs = self._fake_capture()
+        try:
+            return quantize_model_obq(fake, [1, 2, 3], group_size=16, **kw)
+        finally:
+            fisher_mod.capture_linear_inputs = orig
+
+    def test_quantize_model_obq_all_layers(self):
+        # Every linear is OBQ-quantized off ONE capture forward; the rest
+        # passes through fp32. bpw matches the int2_kmeans_q8 bookkeeping.
+        fake = self._fake_dict()
+        lin = linear_weight_tensors(fake)
+        out, bpw = self._patched_obq(fake)
+        self.assertEqual(set(out), set(fake))
+        for k in fake:
+            self.assertEqual(out[k].shape, fake[k].shape)
+        for k in lin:
+            self.assertFalse(np.allclose(out[k], fake[k]), k)
+            self.assertTrue(np.all(np.isfinite(out[k])), k)
+        for k in ("wte.weight", "h.0.mlp.c_fc.bias", "h.0.ln_1.weight"):
+            np.testing.assert_array_equal(out[k], fake[k])
+        self.assertAlmostEqual(bpw, 2.0 + 4 * 8 / 16 + 16 / 16, places=9)
+
+    def test_quantize_model_obq_only_names_restricts(self):
+        fake = self._fake_dict()
+        out, _ = self._patched_obq(
+            fake, only_names={"h.0.mlp.c_fc.weight"})
+        self.assertFalse(np.allclose(out["h.0.mlp.c_fc.weight"],
+                                     fake["h.0.mlp.c_fc.weight"]))
+        np.testing.assert_array_equal(out["h.0.attn.c_proj.weight"],
+                                      fake["h.0.attn.c_proj.weight"])
+
+    def test_quantize_model_obq_unknown_only_names_raises(self):
+        with self.assertRaises(KeyError):
+            self._patched_obq(self._fake_dict(),
+                              only_names={"nope.weight"})
+
+    def test_quantize_model_obq_non_linear_only_names_raises(self):
+        with self.assertRaises(KeyError):
+            self._patched_obq(self._fake_dict(),
+                              only_names={"wte.weight"})
+
+    def test_one_layer_obq_delegates_to_model_obq(self):
+        # The old entry point must give the same one-layer result as the
+        # new shared-capture path, given identical activations.
+        fake = self._fake_dict()
+        import src.quant_rnd.fisher as fisher_mod
+        orig = fisher_mod.capture_linear_inputs
+        fisher_mod.capture_linear_inputs = self._fake_capture()
+        try:
+            a, _ = quantize_one_layer_obq(
+                fake, [1, 2, 3], "h.0.mlp.c_fc.weight", group_size=16)
+            b, _ = quantize_model_obq(
+                fake, [1, 2, 3], group_size=16,
+                only_names={"h.0.mlp.c_fc.weight"})
+        finally:
+            fisher_mod.capture_linear_inputs = orig
+        np.testing.assert_array_equal(a["h.0.mlp.c_fc.weight"],
+                                      b["h.0.mlp.c_fc.weight"])
+        for k in fake:
+            if k != "h.0.mlp.c_fc.weight":
+                np.testing.assert_array_equal(a[k], b[k])
+
+    def test_cli_obq_all_flag(self):
+        args = ppl_parse_args(["m.safetensors"])
+        self.assertFalse(args.obq_all)
+        args = ppl_parse_args(["m.safetensors", "--obq-all"])
+        self.assertTrue(args.obq_all)
+
+    def test_check_obq_args(self):
+        check_obq_args(ppl_parse_args(["m.safetensors", "--obq-all"]))
+        check_obq_args(ppl_parse_args(["m.safetensors", "--obq",
+                                       "--one-layer", "h.0.x"]))
+        with self.assertRaises(SystemExit):
+            check_obq_args(ppl_parse_args(["m.safetensors", "--obq"]))
+        with self.assertRaises(SystemExit):
+            check_obq_args(ppl_parse_args(["m.safetensors", "--obq-all",
+                                           "--one-layer", "h.0.x"]))
+        with self.assertRaises(SystemExit):
+            check_obq_args(ppl_parse_args(["m.safetensors", "--obq-all",
+                                           "--obq", "--one-layer",
+                                           "h.0.x"]))
 
 
 @unittest.skipUnless(os.path.exists(GPT2_WEIGHTS), "gpt2 weights not present")

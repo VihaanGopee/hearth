@@ -66,7 +66,7 @@ def __getattr__(name):
 
         return getattr(_gt, name)
     if name in ("inverse_hessian", "quantize_layer_obq",
-                "hessian_weighted_sse"):
+                "quantize_layers_obq", "hessian_weighted_sse"):
         from . import obq as _obq
 
         return getattr(_obq, name)
@@ -113,5 +113,6 @@ __all__ = [
     "GPT2Tokenizer",
     "inverse_hessian",
     "quantize_layer_obq",
+    "quantize_layers_obq",
     "hessian_weighted_sse",
 ]
