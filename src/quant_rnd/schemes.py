@@ -37,6 +37,10 @@ Candidates (ours, to be validated):
   (_ternary_lloyd_fit with n_iter=1): O(1) extra cost, no convergence
   loop, identical 1.710 bpw. The practical encoder for fitted ternary if
   the ~85% capture holds.
+- ternary_1step_ds ("few-step Lloyd", dual): the dual-scale twin of
+  ternary_1step - dual=True, default n_iter=1 - identical 1.835 bpw to
+  ternary_lloyd_ds. Tests whether few fit iterations also capture the
+  dual-Lloyd win on skewed tensors.
 """
 from dataclasses import dataclass, field
 
@@ -91,7 +95,8 @@ _CODEBOOK_SCHEMES = frozenset({"int2_kmeans", "int2_kmeans_q8"})
 
 # Schemes whose `scales` hold (s_pos, s_neg): code +1 decodes as s_pos,
 # code -1 as -s_neg.
-_DUAL_SCALE_SCHEMES = frozenset({"dual_scale_ternary", "ternary_lloyd_ds"})
+_DUAL_SCALE_SCHEMES = frozenset({"dual_scale_ternary", "ternary_lloyd_ds",
+                                 "ternary_1step_ds"})
 
 
 def _groups(w: np.ndarray, group_size: int = GROUP_SIZE):
@@ -417,11 +422,41 @@ def quantize_ternary_1step(w: np.ndarray, group_size: int = GROUP_SIZE) -> Quant
                        group_size=group_size)
 
 
+def quantize_ternary_1step_ds(w: np.ndarray, group_size: int = GROUP_SIZE,
+                              n_iter: int = 1) -> QuantResult:
+    """Candidate D (ours), dual-scale: "few-step Lloyd" ternary.
+
+    The dual-scale twin of ternary_1step: heuristic dual thresholds
+    (conditional means per side) -> one per-side L2-optimal scale refit ->
+    reassignment at the refit thresholds, via _ternary_lloyd_fit with
+    dual=True and (default) n_iter=1. O(1) extra work over
+    dual_scale_ternary, two fp16 scales per group: identical 1.835 bpw
+    at group 128 to ternary_lloyd_ds, so the comparison isolates whether
+    few fit iterations capture the full dual-Lloyd win (they largely do
+    for the symmetric case - see ternary_1step - but the dual case is
+    tested here on skewed tensors). n_iter is exposed for the
+    convergence check (2-3 iterations are still O(1)).
+    """
+    wp, n_groups, n = _groups(w, group_size)
+    scales = np.zeros((n_groups, 2), dtype=np.float32)
+    codes = np.zeros(n_groups * group_size, dtype=np.int8)
+    for gi in range(n_groups):
+        s_pos, s_neg, c = _ternary_lloyd_fit(wp[gi], dual=True, n_iter=n_iter)
+        scales[gi, 0] = np.float32(s_pos)
+        scales[gi, 1] = np.float32(s_neg)
+        codes[gi * group_size:(gi + 1) * group_size] = c
+    codes = codes[:n]
+    bpw = TERNARY_PAYLOAD_BPW + _scale_overhead(2, group_size)
+    return QuantResult("ternary_1step_ds", codes, scales, bpw,
+                       group_size=group_size)
+
+
 SCHEMES = {
     "ternary_uniform": quantize_ternary_uniform,
     "ternary_lloyd": quantize_ternary_lloyd,
     "ternary_lloyd_ds": quantize_ternary_lloyd_ds,
     "ternary_1step": quantize_ternary_1step,
+    "ternary_1step_ds": quantize_ternary_1step_ds,
     "int2_symmetric": quantize_int2_symmetric,
     "int2_kmeans": quantize_int2_kmeans,
     "int2_kmeans_q8": quantize_int2_kmeans_q8,

@@ -229,10 +229,24 @@ measuring where quality actually breaks.
       `ternary_1step` (the practical encoder) as the ternary reference
       baseline-to-beat, alongside `int2_kmeans_q8` at group 256
       (2.188 bpw) as the classical reference (see opcount re-run below).
-- [ ] Quant R&D: "1-step Lloyd" dual-scale variant — heuristic dual
+- [x] Quant R&D: "1-step Lloyd" dual-scale variant — heuristic dual
       thresholds -> one per-side refit -> reassign; check the capture on
       skewed tensors against ternary_lloyd_ds (currently 0.84–0.87 for
-      the symmetric twin) — follows from the 1-step result.
+      the symmetric twin) — LANDED 2026-09-21 as `ternary_1step_ds`
+      (`_ternary_lloyd_fit` with dual=True, n_iter=1; 88 tests green).
+      ANSWER: PARTIAL, not the symmetric twin's 0.84–0.87. One iteration
+      captures 0.55–0.85 of the dual-Lloyd win across seeds 7–9 (clean +
+      skew 0.5); 2 iterations 0.63–0.97; 3 iterations 0.65–0.99. The
+      dual case converges slower — the practical dual encoder is 2–3
+      fixed iterations (still O(1)), not 1. (Side note the experiment
+      caught: an unregistered dual-scheme name silently mis-decodes in
+      reconstruct() via the single-scale fallback — the
+      _DUAL_SCALE_SCHEMES registration is load-bearing for correctness.)
+- [ ] Quant R&D: re-run the opcount energy/speed comparison with the
+      dual fitted reference (`ternary_1step_ds` at n_iter=2, measured
+      zero-rate per side) — the current numbers use symmetric 1-step's
+      0.41 zero-rate; dual scales change sparsity and the per-side op
+      profile slightly.
 
 ## Ground rules for this research track
 
