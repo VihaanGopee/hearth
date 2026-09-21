@@ -19,11 +19,18 @@ Scope notes (honest):
   are left out of the default sweep and get their own run.
 - Quantization is deterministic (no random init anywhere in the
   encoders), so results are reproducible bit-for-bit.
+- `--eval-texts A.txt,B.txt` overrides `--eval-text` and evaluates every
+  scheme on every text, reporting per-text ppl plus mean/std — the
+  text-robustness protocol the eval_text2 probe motivated (single-text
+  ppl is text-sensitive: ~+30% absolute shift text1 -> text2 for the
+  same scheme). `fp32` is accepted as a scheme name for a same-table
+  unquantized reference (bpw reported as 32.0).
 
 Usage: python3 -m src.quant_rnd.ppl <model.safetensors> [--schemes ...]
 """
 import argparse
 import inspect
+import os
 import time
 
 import numpy as np
@@ -37,6 +44,20 @@ from .schemes import GROUP_SIZE, SCHEMES
 # whose name matches one of these markers are the embedding tables that
 # the weight-only protocol normally leaves in fp32.
 EMBEDDING_MARKERS = ("embed", "wte", "wpe")
+
+
+# Pseudo-scheme: unquantized float32 reference. Accepted in --schemes so
+# the reference sits in the same table; bpw is reported as 32.0 (the
+# checkpoint is float32).
+FP32_SCHEME = "fp32"
+
+
+def eval_text_paths(args: argparse.Namespace) -> list:
+    """Ordered eval-text paths: --eval-texts (comma-separated) overrides
+    --eval-text. Factored for testability."""
+    if args.eval_texts:
+        return [p for p in args.eval_texts.split(",") if p]
+    return [args.eval_text]
 
 
 def is_embedding(name: str) -> bool:
@@ -89,7 +110,15 @@ def quantize_model(tensors: dict, scheme_name: str,
     only to scheme encoders that accept that kwarg (currently
     int2_kmeans_q8); other schemes silently ignore it, so a --fisher run
     over a mixed sweep only reweights the schemes that support it.
+
+    The pseudo-scheme "fp32" skips quantization entirely: every tensor
+    passes through as a float32 copy (the same unquantized reference the
+    log quotes by hand), and bpw is reported as 32.0.
     """
+    if scheme_name == FP32_SCHEME:
+        out = {n: np.ascontiguousarray(t, dtype=np.float32)
+               for n, t in tensors.items()}
+        return out, 32.0
     if scheme_name not in SCHEMES:
         raise KeyError(f"unknown scheme {scheme_name!r}; "
                        f"have {sorted(SCHEMES)}")
@@ -214,10 +243,89 @@ def print_report(results: list) -> None:
         print(f"{r['scheme']:<22}{r['ppl']:>10.2f}{r['bpw']:>8.3f}")
 
 
+def run_multitext_sweep(tensors: dict, texts: list, scheme_names: list,
+                        group_size: int = GROUP_SIZE,
+                        use_fisher: bool = False,
+                        quantize_embeddings: bool = False,
+                        only_names: set | None = None) -> dict:
+    """Quantize once per scheme, evaluate on every (label, ids) text.
+
+    Returns {scheme: {"bpw": float, "ppls": {label: ppl}, "secs": float}}.
+    Quantization does not depend on the eval text, so one quantized
+    weight dict serves all texts. With use_fisher the importance weights
+    are captured on the FIRST text only (documented choice; per-text
+    capture would re-quantize per text).
+    """
+    results = {}
+    for name in scheme_names:
+        t0 = time.time()
+        sample_weights = None
+        if use_fisher:
+            from .fisher import per_weight_importance
+            print(f"collecting diagonal Fisher weights on "
+                  f"{texts[0][0]} (first eval text only)...", flush=True)
+            sample_weights = per_weight_importance(tensors, texts[0][1])
+        qw, bpw = quantize_model(tensors, name, group_size,
+                                 sample_weights=sample_weights,
+                                 quantize_embeddings=quantize_embeddings,
+                                 only_names=only_names)
+        ppls = {}
+        for label, ids in texts:
+            ppl = perplexity_of(qw, ids)
+            ppls[label] = ppl
+            print(f"{name:<22} [{label}] ppl {ppl:8.2f}", flush=True)
+        dt = time.time() - t0
+        results[name] = {"bpw": bpw, "ppls": ppls, "secs": dt}
+    return results
+
+
+def aggregate_multitext(results: dict) -> list:
+    """Per-scheme mean/std of ppl over the eval texts, sorted by mean
+    ascending. Adds x_fp32 = mean / fp32-mean when the fp32 reference is
+    in the results (the methodology item's discrimination denominator);
+    None otherwise. std is the population std (2-3 texts, ddof=0)."""
+    rows = []
+    for scheme, r in results.items():
+        ppls = np.array(list(r["ppls"].values()), dtype=np.float64)
+        rows.append({"scheme": scheme, "bpw": r["bpw"],
+                     "ppls": dict(r["ppls"]),
+                     "mean": float(np.mean(ppls)),
+                     "std": float(np.std(ppls))})
+    fp32 = next((r for r in rows if r["scheme"] == FP32_SCHEME), None)
+    for r in rows:
+        r["x_fp32"] = (r["mean"] / fp32["mean"]) if fp32 else None
+    rows.sort(key=lambda r: r["mean"])
+    return rows
+
+
+def print_multitext_report(rows: list, labels: list) -> None:
+    show_x = bool(rows) and rows[0]["x_fp32"] is not None
+    head = (f"\n{'scheme':<22}{'bpw':>8}"
+            + "".join(f"{l:>12}" for l in labels)
+            + f"{'mean':>10}{'std':>8}")
+    if show_x:
+        head += f"{'x_fp32':>8}"
+    print(head)
+    print("-" * len(head))
+    for r in rows:
+        line = (f"{r['scheme']:<22}{r['bpw']:>8.3f}"
+                + "".join(f"{r['ppls'][l]:>12.2f}" for l in labels)
+                + f"{r['mean']:>10.2f}{r['std']:>8.2f}")
+        if show_x:
+            line += f"{r['x_fp32']:>8.2f}"
+        print(line)
+
+
 def parse_args(argv: list | None = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="quantized perplexity probe")
     ap.add_argument("safetensors", help="path to model.safetensors")
-    ap.add_argument("--eval-text", default="research/data/eval_text.txt")
+    ap.add_argument("--eval-text", default="research/data/eval_text.txt",
+                    help="single eval text (overridden by --eval-texts)")
+    ap.add_argument("--eval-texts", default=None, metavar="A.TXT,B.TXT",
+                    help="comma-separated eval texts; overrides --eval-text. "
+                         "Each scheme is evaluated on every text and the "
+                         "report shows per-text ppl plus mean/std (the "
+                         "text-robustness protocol)")
     ap.add_argument("--tokenizer-dir", default="research/data/tokenizer")
     ap.add_argument("--schemes", default=",".join(DEFAULT_SWEEP),
                     help="comma-separated scheme names")
@@ -274,11 +382,19 @@ def main() -> None:
     if args.quantize_embeddings:
         print("quantize_embeddings ON: embedding tables (wte, wpe) also "
               "quantized with the same scheme; biases/LN stay fp32")
-    with open(args.eval_text) as f:
-        text = f.read()
-    ids = GPT2Tokenizer(args.tokenizer_dir).encode(text)
-    print(f"eval text: {len(ids)} tokens")
+    texts = []
+    for p in eval_text_paths(args):
+        with open(p) as f:
+            text = f.read()
+        ids = GPT2Tokenizer(args.tokenizer_dir).encode(text)
+        label = os.path.basename(p)
+        texts.append((label, ids))
+        print(f"eval text {label}: {len(ids)} tokens")
     check_obq_args(args)
+    if len(texts) > 1 and (args.obq_all or args.obq):
+        print("note: OBQ probes run on the first eval text only "
+              f"({texts[0][0]})")
+    ids = texts[0][1]
     if args.obq_all:
         t0 = time.time()
         print(f"OBQ-quantizing all linear layers "
@@ -306,19 +422,29 @@ def main() -> None:
     if only:
         print(f"one-layer mode: only {args.one_layer} quantized, "
               "rest fp32")
-    sample_weights = None
-    if args.fisher:
-        from .fisher import per_weight_importance
-        print("collecting diagonal Fisher weights (one fp32 forward)...",
-              flush=True)
-        sample_weights = per_weight_importance(tensors, ids)
-        print("fisher weighting on; applies to schemes accepting "
-              "sample_weight (int2_kmeans_q8)", flush=True)
-    results = run_sweep(tensors, ids, scheme_names, args.group_size,
-                        sample_weights=sample_weights,
-                        quantize_embeddings=args.quantize_embeddings,
-                        only_names=only)
-    print_report(results)
+    if len(texts) == 1:
+        # Original single-text protocol: output format unchanged.
+        sample_weights = None
+        if args.fisher:
+            from .fisher import per_weight_importance
+            print("collecting diagonal Fisher weights (one fp32 "
+                  "forward)...", flush=True)
+            sample_weights = per_weight_importance(tensors, ids)
+            print("fisher weighting on; applies to schemes accepting "
+                  "sample_weight (int2_kmeans_q8)", flush=True)
+        results = run_sweep(tensors, ids, scheme_names, args.group_size,
+                            sample_weights=sample_weights,
+                            quantize_embeddings=args.quantize_embeddings,
+                            only_names=only)
+        print_report(results)
+        return
+    results = run_multitext_sweep(tensors, texts, scheme_names,
+                                  args.group_size,
+                                  use_fisher=args.fisher,
+                                  quantize_embeddings=args.quantize_embeddings,
+                                  only_names=only)
+    rows = aggregate_multitext(results)
+    print_multitext_report(rows, [label for label, _ in texts])
 
 
 if __name__ == "__main__":

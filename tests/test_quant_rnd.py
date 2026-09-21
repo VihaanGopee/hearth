@@ -1357,7 +1357,10 @@ class TestGPT2RealWeights(unittest.TestCase):
 
 from src.quant_rnd.ppl import (
     DEFAULT_SWEEP,
+    FP32_SCHEME,
+    aggregate_multitext,
     check_obq_args,
+    eval_text_paths,
     is_embedding,
     parse_args as ppl_parse_args,
     perplexity_of,
@@ -1631,6 +1634,71 @@ class TestQuantizeModel(unittest.TestCase):
 
 
 @unittest.skipUnless(os.path.exists(GPT2_WEIGHTS), "gpt2 weights not present")
+class TestMultiTextEval(unittest.TestCase):
+    """--eval-texts plumbing, the fp32 pseudo-scheme, and the
+    mean/std aggregation (the text-robustness protocol)."""
+
+    def test_cli_eval_texts_parsing(self):
+        args = ppl_parse_args(["m.safetensors"])
+        self.assertIsNone(args.eval_texts)
+        self.assertEqual(args.eval_text, "research/data/eval_text.txt")
+        args = ppl_parse_args(["m.safetensors", "--eval-texts",
+                               "a.txt,b.txt"])
+        self.assertEqual(args.eval_texts, "a.txt,b.txt")
+
+    def test_eval_text_paths_prefers_plural(self):
+        args = ppl_parse_args(["m.safetensors", "--eval-texts",
+                               "a.txt,b.txt", "--eval-text", "c.txt"])
+        self.assertEqual(eval_text_paths(args), ["a.txt", "b.txt"])
+        args = ppl_parse_args(["m.safetensors", "--eval-text", "c.txt"])
+        self.assertEqual(eval_text_paths(args), ["c.txt"])
+        # empty --eval-texts falls back to the singular default
+        args = ppl_parse_args(["m.safetensors", "--eval-texts", ""])
+        self.assertEqual(eval_text_paths(args),
+                         ["research/data/eval_text.txt"])
+
+    def test_fp32_scheme_passthrough(self):
+        fake = TestQuantizeModel._fake_dict()
+        before = {k: v.copy() for k, v in fake.items()}
+        out, bpw = quantize_model(fake, FP32_SCHEME, group_size=32)
+        self.assertEqual(bpw, 32.0)
+        self.assertEqual(set(out), set(fake))
+        for k in fake:
+            # bit-identical passthrough, input dict untouched
+            np.testing.assert_array_equal(out[k], fake[k])
+            np.testing.assert_array_equal(fake[k], before[k])
+            self.assertEqual(out[k].dtype, np.float32)
+
+    def test_aggregate_multitext_mean_std_sort(self):
+        results = {
+            "ternary_uniform": {"bpw": 1.710,
+                                "ppls": {"t1": 100.0, "t2": 140.0},
+                                "secs": 1.0},
+            FP32_SCHEME: {"bpw": 32.0,
+                          "ppls": {"t1": 50.0, "t2": 60.0},
+                          "secs": 1.0},
+        }
+        rows = aggregate_multitext(results)
+        # sorted by mean ascending: fp32 first
+        self.assertEqual([r["scheme"] for r in rows],
+                         [FP32_SCHEME, "ternary_uniform"])
+        tu = rows[1]
+        self.assertAlmostEqual(tu["mean"], 120.0)
+        self.assertAlmostEqual(tu["std"], 20.0)  # population std
+        self.assertAlmostEqual(tu["x_fp32"], 120.0 / 55.0)
+        self.assertEqual(tu["ppls"], {"t1": 100.0, "t2": 140.0})
+
+    def test_aggregate_multitext_no_fp32(self):
+        results = {"ternary_uniform": {"bpw": 1.710,
+                                       "ppls": {"t1": 100.0},
+                                       "secs": 1.0}}
+        rows = aggregate_multitext(results)
+        self.assertEqual(len(rows), 1)
+        self.assertAlmostEqual(rows[0]["mean"], 100.0)
+        self.assertAlmostEqual(rows[0]["std"], 0.0)
+        self.assertIsNone(rows[0]["x_fp32"])
+
+
 class TestQuantizedPerplexityEndToEnd(unittest.TestCase):
     """Gated: quantize the real GPT-2 124M and forward 16 tokens.
 
