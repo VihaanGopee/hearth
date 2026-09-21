@@ -67,8 +67,12 @@ def _softmax(x: np.ndarray) -> np.ndarray:
 
 def attention(x: np.ndarray, w_qkv: np.ndarray, b_qkv: np.ndarray,
               w_proj: np.ndarray, b_proj: np.ndarray,
-              n_head: int) -> np.ndarray:
-    """Single causal multi-head attention block. x: (T, C)."""
+              n_head: int, capture: dict | None = None) -> np.ndarray:
+    """Single causal multi-head attention block. x: (T, C).
+
+    If `capture` is a dict, the c_proj input activation is stored under
+    capture["proj_in"] (shape (T, C)); the returned value is unchanged.
+    """
     t, c = x.shape
     q, k, v = np.split(x @ w_qkv + b_qkv, 3, axis=-1)  # each (T, C)
     hd = c // n_head
@@ -82,12 +86,19 @@ def attention(x: np.ndarray, w_qkv: np.ndarray, b_qkv: np.ndarray,
     scores = np.where(causal, scores, -1e4)
     out = _softmax(scores) @ v  # (H, T, hd)
     out = out.transpose(1, 0, 2).reshape(t, c)
+    if capture is not None:
+        capture["proj_in"] = out
     return out @ w_proj + b_proj
 
 
 def mlp(x: np.ndarray, w_fc: np.ndarray, b_fc: np.ndarray,
-        w_proj: np.ndarray, b_proj: np.ndarray) -> np.ndarray:
+        w_proj: np.ndarray, b_proj: np.ndarray,
+        capture: dict | None = None) -> np.ndarray:
+    """Two-layer MLP. If `capture` is a dict, the c_proj input activation
+    (post-GELU hidden state) is stored under capture["proj_in"]."""
     h = gelu(x @ w_fc + b_fc)
+    if capture is not None:
+        capture["proj_in"] = h
     return h @ w_proj + b_proj
 
 
@@ -106,8 +117,14 @@ class GPT2:
         self.vocab_size = int(self.t["wte.weight"].shape[0])
         self.n_ctx = int(self.t["wpe.weight"].shape[0])
 
-    def forward(self, token_ids) -> np.ndarray:
-        """Logits for each position: (T, vocab). logits[i] predicts ids[i+1]."""
+    def forward(self, token_ids, capture: dict | None = None) -> np.ndarray:
+        """Logits for each position: (T, vocab). logits[i] predicts ids[i+1].
+
+        If `capture` is a dict, it is filled with the input activation of
+        every linear weight, keyed by tensor name
+        (e.g. capture["h.3.attn.c_attn.weight"], shape (T, in_dim)).
+        Logits are unaffected by capturing.
+        """
         ids = np.asarray(token_ids, dtype=np.int64)
         t = ids.shape[0]
         if t > self.n_ctx:
@@ -115,17 +132,33 @@ class GPT2:
         x = self.t["wte.weight"][ids] + self.t["wpe.weight"][:t]
         for i in range(self.n_layer):
             p = f"h.{i}."
+            ln1 = layer_norm(x, self.t[p + "ln_1.weight"],
+                             self.t[p + "ln_1.bias"])
+            if capture is not None:
+                capture[p + "attn.c_attn.weight"] = ln1
+            tmp: dict = {}
             x = x + attention(
-                layer_norm(x, self.t[p + "ln_1.weight"], self.t[p + "ln_1.bias"]),
+                ln1,
                 self.t[p + "attn.c_attn.weight"], self.t[p + "attn.c_attn.bias"],
                 self.t[p + "attn.c_proj.weight"], self.t[p + "attn.c_proj.bias"],
                 self.n_head,
+                capture=tmp if capture is not None else None,
             )
+            if capture is not None:
+                capture[p + "attn.c_proj.weight"] = tmp["proj_in"]
+            ln2 = layer_norm(x, self.t[p + "ln_2.weight"],
+                             self.t[p + "ln_2.bias"])
+            if capture is not None:
+                capture[p + "mlp.c_fc.weight"] = ln2
+            tmp = {}
             x = x + mlp(
-                layer_norm(x, self.t[p + "ln_2.weight"], self.t[p + "ln_2.bias"]),
+                ln2,
                 self.t[p + "mlp.c_fc.weight"], self.t[p + "mlp.c_fc.bias"],
                 self.t[p + "mlp.c_proj.weight"], self.t[p + "mlp.c_proj.bias"],
+                capture=tmp if capture is not None else None,
             )
+            if capture is not None:
+                capture[p + "mlp.c_proj.weight"] = tmp["proj_in"]
         x = layer_norm(x, self.t["ln_f.weight"], self.t["ln_f.bias"])
         return x @ self.t["wte.weight"].T  # lm_head tied to wte
 

@@ -224,21 +224,54 @@ def quantize_ternary_outlier(w: np.ndarray, group_size: int = GROUP_SIZE,
     return base
 
 
-def _lloyd_1d(x: np.ndarray, k: int = 4, n_iter: int = 20) -> np.ndarray:
+def _lloyd_1d(x: np.ndarray, k: int = 4, n_iter: int = 20,
+              w: np.ndarray | None = None) -> np.ndarray:
     """Deterministic 1-D Lloyd's algorithm; returns k centroids.
 
     Quantile initialization keeps it deterministic (no random restarts);
     empty clusters keep their previous centroid.
+
+    If `w` (per-element, non-negative) is given, assignment minimizes
+    w_i * (x_i - c_j)^2 and the refit is the weighted mean -- the
+    diagonal-Hessian reweighting used by the OBQ first slice (fisher.py):
+    weights in high-energy input channels pull the codebook toward
+    themselves. w=None runs the original unweighted code path verbatim
+    (bit-identical to pre-fisher versions, pinned by test, so all
+    previously published anchor numbers reproduce exactly).
     """
+    if w is None:
+        # Original unweighted path, kept verbatim: float32 .mean() refit
+        # differs from a float64 weighted mean in the last ulp, which can
+        # flip code assignments at boundaries.
+        qs = (np.arange(k) + 0.5) / k
+        cent = np.quantile(x.astype(np.float64), qs)
+        for _ in range(n_iter):
+            assign = np.abs(x[:, None] - cent[None, :]).argmin(axis=1)
+            new = cent.copy()
+            for j in range(k):
+                m = assign == j
+                if m.any():
+                    new[j] = x[m].mean()
+            if np.allclose(new, cent):
+                break
+            cent = new
+        return cent.astype(np.float32)
+    x = x.astype(np.float64)
+    w = np.asarray(w, dtype=np.float64)
+    if w.shape != x.shape:
+        raise ValueError(f"weight shape {w.shape} != data shape {x.shape}")
+    if (w < 0).any():
+        raise ValueError("weights must be non-negative")
     qs = (np.arange(k) + 0.5) / k
-    cent = np.quantile(x.astype(np.float64), qs)
+    cent = np.quantile(x, qs)
     for _ in range(n_iter):
-        assign = np.abs(x[:, None] - cent[None, :]).argmin(axis=1)
+        assign = (w[:, None] * (x[:, None] - cent[None, :]) ** 2).argmin(axis=1)
         new = cent.copy()
         for j in range(k):
             m = assign == j
-            if m.any():
-                new[j] = x[m].mean()
+            sw = w[m].sum()
+            if sw > 0:
+                new[j] = (w[m] * x[m]).sum() / sw
         if np.allclose(new, cent):
             break
         cent = new
@@ -267,7 +300,8 @@ def quantize_int2_kmeans(w: np.ndarray, group_size: int = GROUP_SIZE,
 
 
 def quantize_int2_kmeans_q8(w: np.ndarray, group_size: int = GROUP_SIZE,
-                            n_iter: int = 20) -> QuantResult:
+                            n_iter: int = 20,
+                            sample_weight: np.ndarray | None = None) -> QuantResult:
     """Matched-bitrate k-means: Lloyd 2-bit with an 8-bit codebook.
 
     Same per-group Lloyd fit as int2_kmeans, but the 4 fitted centroids are
@@ -280,9 +314,24 @@ def quantize_int2_kmeans_q8(w: np.ndarray, group_size: int = GROUP_SIZE,
     measures exactly what a real decoder would see, including the 8-bit
     codebook rounding; code assignment is also done against the stored
     (rounded) codebook, as an honest encoder would.
+
+    `sample_weight`: optional per-weight non-negative importance, same
+    length as w (see fisher.per_weight_importance). When given, each
+    group's Lloyd fit is reweighted by it (diagonal-Hessian weighting,
+    the OBQ first slice). sample_weight=None reproduces the unweighted
+    fit exactly.
     """
     wp, n_groups, n = _groups(w, group_size)
-    centroids = np.stack([_lloyd_1d(g, n_iter=n_iter) for g in wp])
+    if sample_weight is None:
+        centroids = np.stack([_lloyd_1d(g, n_iter=n_iter) for g in wp])
+    else:
+        sw = np.asarray(sample_weight).ravel()
+        if sw.shape[0] != n:
+            raise ValueError(f"sample_weight length {sw.shape[0]} != "
+                             f"weights length {n}")
+        swp, _, _ = _groups(sw, group_size)
+        centroids = np.stack([_lloyd_1d(g, n_iter=n_iter, w=sg)
+                              for g, sg in zip(wp, swp)])
     # Symmetric 8-bit quantization of the per-group codebook.
     cmax = np.max(np.abs(centroids), axis=1, keepdims=True).astype(np.float32)
     cmax = np.maximum(cmax, 1e-12)  # all-zero group guard

@@ -22,6 +22,7 @@ Scope notes (honest):
 Usage: python3 -m src.quant_rnd.ppl <model.safetensors> [--schemes ...]
 """
 import argparse
+import inspect
 import time
 
 import numpy as np
@@ -47,7 +48,8 @@ DEFAULT_SWEEP = [
 
 
 def quantize_model(tensors: dict, scheme_name: str,
-                   group_size: int = GROUP_SIZE) -> tuple:
+                   group_size: int = GROUP_SIZE,
+                   sample_weights: dict | None = None) -> tuple:
     """Quantize + reconstruct every linear weight with `scheme_name`.
 
     Returns (weights, bpw): a new {name: float32 ndarray} dict with the
@@ -55,18 +57,29 @@ def quantize_model(tensors: dict, scheme_name: str,
     linear_weight_tensors selects) are quantized group-wise over the flat
     array and reconstructed, everything else passes through as a float32
     copy. The input dict is not modified.
+
+    `sample_weights`: optional {tensor_name: flat per-weight importance}
+    (see fisher.per_weight_importance). It is passed as `sample_weight=`
+    only to scheme encoders that accept that kwarg (currently
+    int2_kmeans_q8); other schemes silently ignore it, so a --fisher run
+    over a mixed sweep only reweights the schemes that support it.
     """
     if scheme_name not in SCHEMES:
         raise KeyError(f"unknown scheme {scheme_name!r}; "
                        f"have {sorted(SCHEMES)}")
     fn = SCHEMES[scheme_name]
+    takes_weight = "sample_weight" in inspect.signature(fn).parameters
     linear = set(linear_weight_tensors(tensors))
     out = {}
     bpw = None
     for name, t in tensors.items():
         t32 = np.ascontiguousarray(t, dtype=np.float32)
         if name in linear:
-            q = fn(t32.ravel(), group_size=group_size)
+            kw = {}
+            if (sample_weights is not None and takes_weight
+                    and name in sample_weights):
+                kw["sample_weight"] = sample_weights[name]
+            q = fn(t32.ravel(), group_size=group_size, **kw)
             out[name] = q.reconstruct().reshape(t.shape)
             bpw = q.bpw
         else:
@@ -80,12 +93,14 @@ def perplexity_of(tensors: dict, token_ids) -> float:
 
 
 def run_sweep(tensors: dict, token_ids, scheme_names: list,
-              group_size: int = GROUP_SIZE) -> list:
+              group_size: int = GROUP_SIZE,
+              sample_weights: dict | None = None) -> list:
     """Quantize + forward per scheme; results sorted by perplexity asc."""
     results = []
     for name in scheme_names:
         t0 = time.time()
-        qw, bpw = quantize_model(tensors, name, group_size)
+        qw, bpw = quantize_model(tensors, name, group_size,
+                                 sample_weights=sample_weights)
         ppl = perplexity_of(qw, token_ids)
         dt = time.time() - t0
         results.append({"scheme": name, "ppl": ppl, "bpw": bpw,
@@ -111,6 +126,12 @@ def parse_args(argv: list | None = None) -> argparse.Namespace:
     ap.add_argument("--schemes", default=",".join(DEFAULT_SWEEP),
                     help="comma-separated scheme names")
     ap.add_argument("--group-size", type=int, default=GROUP_SIZE)
+    ap.add_argument("--fisher", action="store_true",
+                    help="reweight Lloyd centroid fits by the diagonal "
+                         "empirical Fisher (per-input-channel activation "
+                         "energy from one fp32 forward on the eval text); "
+                         "only schemes whose encoder accepts sample_weight "
+                         "(currently int2_kmeans_q8) are affected")
     return ap.parse_args(argv)
 
 
@@ -125,7 +146,16 @@ def main() -> None:
     ids = GPT2Tokenizer(args.tokenizer_dir).encode(text)
     print(f"eval text: {len(ids)} tokens")
     scheme_names = [s for s in args.schemes.split(",") if s]
-    results = run_sweep(tensors, ids, scheme_names, args.group_size)
+    sample_weights = None
+    if args.fisher:
+        from .fisher import per_weight_importance
+        print("collecting diagonal Fisher weights (one fp32 forward)...",
+              flush=True)
+        sample_weights = per_weight_importance(tensors, ids)
+        print("fisher weighting on; applies to schemes accepting "
+              "sample_weight (int2_kmeans_q8)", flush=True)
+    results = run_sweep(tensors, ids, scheme_names, args.group_size,
+                        sample_weights=sample_weights)
     print_report(results)
 
 

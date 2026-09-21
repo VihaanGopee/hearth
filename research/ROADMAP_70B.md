@@ -378,22 +378,39 @@ measuring where quality actually breaks.
       SQNR edge (7.07 vs ~6.8 dB) buys nothing meaningful in ppl (1.3%
       better at +0.125 bpw). g128 stays the group size for the ternary
       reference; the fidelity anchor stays g128 across the board.
-- [ ] Quant R&D: does the g128-beats-g256 ppl verdict transfer to
-      eval_text2 — re-run int2_kmeans_q8 g256 on the second text
-      (~5.5 min). If g128 wins there too, the group-size verdict is
-      text-robust; if it flips, the 795.96 anchor decision was
-      text-luck and OBQ must be multi-text from the start.
+- [x] Quant R&D: does the g128-beats-g256 ppl verdict transfer to
+      eval_text2 — ANSWERED 2026-09-21: YES, it transfers and the gap
+      widens. int2_kmeans_q8 g256 on text2: **1971.77 @ 2.188 bpw** vs
+      g128 1047.35 @ 2.375 (text1: 1085.61 vs 795.96 — 37% gap). g128
+      wins on both texts, so the 795.96 anchor decision was not
+      text-luck; the group-size verdict is text-robust.
 - [ ] Quant R&D: shuffled-block eval sample — sample N disjoint blocks
       from a longer corpus (keeping the tokenizer + harness unchanged)
       and report mean/std of ppl per scheme; replaces the
       single-contiguous-block protocol whose text sensitivity the
       text2 probe just demonstrated.
-- [ ] Quant R&D: OBQ first slice — before a full GPTQ-style pass,
-      implement per-group empirical-Fisher reweighting of the Lloyd
-      centroid fit only (diagonal Hessian from a few fp32 forward
-      passes), and measure the ppl delta vs unweighted Lloyd at g128.
-      If the delta is ~0, skip to full per-weight error-compensation;
-      if it moves ppl, it becomes the cheap default.
+- [x] Quant R&D: OBQ first slice — ANSWERED 2026-09-21, delta ~0.
+      Landed as `src/quant_rnd/fisher.py` (activation capture in
+      gpt2_forward.py, diag-Fisher d_j = mean_t(x_{t,j}^2) per input
+      channel), weighted `_lloyd_1d`, `sample_weight` on
+      int2_kmeans_q8, and `ppl.py --fisher` (141 tests green, incl. a
+      bit-identical unweighted-path pin). int2_kmeans_q8 g128 with
+      Fisher reweighting: **795.93 @ 2.375 bpw** vs 795.96 unweighted —
+      the reweighting provably changes the codebook (synthetic test)
+      but buys nothing in perplexity. Per the item's decision rule:
+      skip to full per-weight error-compensation (new item below); do
+      NOT bother with a Fisher-weighted ternary_lloyd variant.
+      Caveats: diagonal Hessian only; calibrated on the eval text
+      itself (no held-out corpus on this VM yet).
+- [ ] Quant R&D: full per-weight error-compensation prototype
+      (GPTQ/OBQ-style) — the Fisher-centroid slice moved ppl ~0, so the
+      honest next fidelity step is quantizing weights sequentially with
+      Hessian-guided error compensation into not-yet-quantized weights.
+      Slice it: start with one layer (c_attn), full-model second;
+      measure ppl delta vs the 795.96 anchor at g128. Needs the
+      activation-capture plumbing from fisher.py (already landed) plus a
+      per-layer X^T X inverse (or damped diagonal) — the inverse is the
+      hard part on this VM, consider a block-wise / iterative solve.
 - [ ] Quant R&D: 1-step Lloyd re-fit of centroids is already the cheap
       fitted-ternary encoder; check whether its measured 0.41 zero-rate
       (vs 0.31 uniform) can be raised toward 0.5 (more sparsity -> more

@@ -1404,5 +1404,171 @@ class TestQuantizedPerplexityEndToEnd(unittest.TestCase):
             GPT2(self.tensors).perplexity(ids), places=9)
 
 
+from src.quant_rnd.schemes import _lloyd_1d
+from src.quant_rnd.fisher import (
+    capture_linear_inputs,
+    diag_fisher_weights,
+    per_weight_importance,
+)
+
+
+class TestFisherWeightedLloyd(unittest.TestCase):
+    """Diagonal-Fisher reweighting of the Lloyd centroid fit (OBQ slice 1).
+
+    fisher.py collects per-input-channel activation energy d_j from an fp32
+    forward pass; schemes.py::_lloyd_1d accepts it as per-element weights so
+    high-energy channels pull the codebook toward themselves. Ungated tests
+    pin the weighted-fit mechanics on synthetic data; gated tests pin the
+    capture/energy plumbing on the real GPT-2 checkpoint.
+    """
+
+    def test_weighted_uniform_matches_unweighted(self):
+        rng = np.random.default_rng(11)
+        x = rng.standard_normal(256).astype(np.float32)
+        a = _lloyd_1d(x, k=4, n_iter=20)
+        b = _lloyd_1d(x, k=4, n_iter=20, w=np.ones(256))
+        self.assertTrue(np.allclose(a, b, rtol=1e-6, atol=1e-9))
+
+    def test_weighted_zero_weight_points_ignored(self):
+        # One cluster + one far outlier with zero weight: the weighted
+        # centroid must sit on the cluster, the unweighted one is dragged
+        # toward the outlier.
+        x = np.concatenate([np.linspace(-1, 1, 100),
+                            [50.0]]).astype(np.float32)
+        w = np.concatenate([np.ones(100), [0.0]])
+        cw = _lloyd_1d(x, k=1, n_iter=20, w=w)
+        cu = _lloyd_1d(x, k=1, n_iter=20)
+        self.assertLess(abs(float(cw[0])), 0.05)
+        self.assertGreater(abs(float(cu[0]) - float(cw[0])), 0.3)
+
+    def test_weighted_rejects_negative(self):
+        x = np.arange(16, dtype=np.float32)
+        w = np.ones(16)
+        w[3] = -1.0
+        with self.assertRaises(ValueError):
+            _lloyd_1d(x, k=2, w=w)
+
+    def test_weighted_rejects_shape_mismatch(self):
+        with self.assertRaises(ValueError):
+            _lloyd_1d(np.arange(16, dtype=np.float32), k=2,
+                      w=np.ones(8))
+
+    def test_kmeans_q8_none_weight_is_default(self):
+        rng = np.random.default_rng(7)
+        w = rng.standard_normal(512).astype(np.float32)
+        a = quantize_int2_kmeans_q8(w, group_size=128)
+        b = quantize_int2_kmeans_q8(w, group_size=128, sample_weight=None)
+        self.assertTrue(np.array_equal(a.codes, b.codes))
+        self.assertTrue(np.array_equal(a.scales, b.scales))
+
+    def test_kmeans_q8_weighted_changes_fit(self):
+        # Deterministic (no random init): seeded weights must move the
+        # codebook vs the unweighted fit.
+        rng = np.random.default_rng(7)
+        w = rng.standard_normal(512).astype(np.float32)
+        sw = rng.uniform(0.1, 2.0, 512).astype(np.float32)
+        a = quantize_int2_kmeans_q8(w, group_size=128)
+        b = quantize_int2_kmeans_q8(w, group_size=128, sample_weight=sw)
+        self.assertFalse(np.array_equal(a.codes, b.codes))
+        self.assertFalse(np.array_equal(a.scales, b.scales))
+        # Same storage format: bpw unchanged, decode still finite.
+        self.assertAlmostEqual(a.bpw, b.bpw, places=12)
+        self.assertTrue(np.all(np.isfinite(b.reconstruct())))
+
+    def test_kmeans_q8_weighted_wrong_length(self):
+        with self.assertRaises(ValueError):
+            quantize_int2_kmeans_q8(np.zeros(128, dtype=np.float32),
+                                    group_size=128,
+                                    sample_weight=np.ones(64))
+
+    def _fake_linear_dict(self):
+        rng = np.random.default_rng(3)
+        return {
+            "h.0.attn.c_attn.weight": rng.standard_normal((8, 16)),
+            "wte.weight": rng.standard_normal((32, 16)),
+        }
+
+    def test_quantize_model_passes_sample_weights(self):
+        fake = self._fake_linear_dict()
+        sw = {"h.0.attn.c_attn.weight": np.ones(8 * 16, dtype=np.float32)}
+        out, bpw = quantize_model(fake, "int2_kmeans_q8", group_size=32,
+                                  sample_weights=sw)
+        self.assertAlmostEqual(bpw, 2.0 + 4 * 8 / 32 + 16 / 32, places=9)
+        self.assertEqual(out["h.0.attn.c_attn.weight"].shape, (8, 16))
+        # input dict not modified
+        self.assertEqual(fake["h.0.attn.c_attn.weight"].shape, (8, 16))
+
+    def test_quantize_model_ignores_weights_for_unsupported_scheme(self):
+        fake = self._fake_linear_dict()
+        sw = {"h.0.attn.c_attn.weight": np.ones(8 * 16, dtype=np.float32)}
+        out, _ = quantize_model(fake, "ternary_uniform", group_size=32,
+                                sample_weights=sw)
+        plain, _ = quantize_model(fake, "ternary_uniform", group_size=32)
+        self.assertTrue(np.array_equal(
+            out["h.0.attn.c_attn.weight"], plain["h.0.attn.c_attn.weight"]))
+
+    def test_quantize_model_unknown_weight_name_ignored(self):
+        fake = self._fake_linear_dict()
+        sw = {"nope.weight": np.ones(10, dtype=np.float32)}
+        out, _ = quantize_model(fake, "int2_kmeans_q8", group_size=32,
+                                sample_weights=sw)
+        self.assertIn("h.0.attn.c_attn.weight", out)
+
+
+@unittest.skipUnless(os.path.exists(GPT2_WEIGHTS), "gpt2 weights not present")
+class TestFisherCaptureGated(unittest.TestCase):
+    """Activation-capture and Fisher-energy plumbing on the real checkpoint."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tensors = read_safetensors(GPT2_WEIGHTS)
+        cls.names = sorted(linear_weight_tensors(cls.tensors))
+
+    def test_forward_capture_leaves_logits_unchanged(self):
+        ids = list(range(16))
+        model = GPT2(self.tensors)
+        ref = model.forward(ids)
+        cap: dict = {}
+        got = model.forward(ids, capture=cap)
+        self.assertTrue(np.array_equal(ref, got))
+        self.assertEqual(set(cap), set(self.names))
+
+    def test_capture_shapes_match_in_dims(self):
+        ids = list(range(16))
+        cap = capture_linear_inputs(self.tensors, ids)
+        for name in self.names:
+            in_dim = self.tensors[name].shape[0]
+            self.assertEqual(cap[name].shape, (16, in_dim), name)
+
+    def test_diag_fisher_nonnegative_and_sane(self):
+        ids = list(range(16))
+        cap = capture_linear_inputs(self.tensors, ids)
+        energies = diag_fisher_weights(cap, self.names)
+        self.assertEqual(set(energies), set(self.names))
+        total = 0.0
+        for name in self.names:
+            e = energies[name]
+            self.assertEqual(e.shape, (self.tensors[name].shape[0],), name)
+            self.assertTrue(np.all(np.isfinite(e)), name)
+            self.assertTrue(np.all(e >= 0), name)
+            total += float(e.sum())
+        self.assertGreater(total, 0.0)
+
+    def test_per_weight_importance_alignment(self):
+        ids = list(range(16))
+        imp = per_weight_importance(self.tensors, ids)
+        cap = capture_linear_inputs(self.tensors, ids)
+        energies = diag_fisher_weights(cap, self.names)
+        self.assertEqual(set(imp), set(self.names))
+        name = self.names[0]
+        w = self.tensors[name]
+        out_dim = w.shape[1]
+        self.assertEqual(imp[name].shape, (w.size,))
+        e = energies[name]
+        for j in range(w.shape[0]):
+            seg = imp[name][j * out_dim:(j + 1) * out_dim]
+            self.assertTrue(np.all(seg == e[j]), (name, j))
+
+
 if __name__ == "__main__":
     unittest.main()
