@@ -90,8 +90,22 @@ measuring where quality actually breaks.
 
 - [x] Direct llama.cpp backend (`src/llamacpp_backend.py`, `backend: llamacpp`) — unlocks IQ1_M/TQ1_0, KV-cache types, Metal layers (2026-09-20)
 - [x] `estimate_fit` tool (`src/tools/fitcheck.py`) — weights + KV cache math vs usable budget (2026-09-20)
-- [ ] Quant R&D: prototype novel ternary/sub-2-bit schemes on small models, perplexity vs IQ1_M/TQ1_0
-- [ ] Quant R&D: if a prototype wins, ggml CPU kernels + upstream write-up/PR
+- [x] Quant R&D: harness scaffolded — `src/quant_rnd/` (5 schemes, synthetic
+      SQNR bench, 12 tests). Baselines: ternary_uniform (T1_0-like),
+      int2_symmetric (naive), int2_outlier_retain (mixed-precision).
+      Candidates: dual_scale_ternary (asymmetric ternary), ternary_outlier
+      (T1 + 2 exact fp16 outliers/group). Synthetic result 2026-09-20:
+      ternary_outlier 6.73 dB @ 2.06 bpw > int2_symmetric 2.51 dB @ 2.13 bpw;
+      dual_scale_ternary beats symmetric ternary on skewed tensors.
+      PROXY ONLY — not real-model perplexity.
+- [ ] Quant R&D: validate candidates on a real tiny model (60–130M params,
+      CPU-friendly) — real perplexity vs the synthetic SQNR ranking
+- [ ] Quant R&D: sweep outlier_frac / n_outliers for the Pareto frontier
+      (SQNR vs bpw) before picking a kernel target
+- [ ] Quant R&D: if a candidate holds up on real perplexity, design the
+      ggml CPU kernel (ternary add/sub path) + upstream write-up/PR
+- [ ] Quant R&D: add a K-means (Lloyd) 2-bit baseline — the fair classical
+      comparison the current naive int2 baseline lacks
 - [ ] Check whether current Ollama release supports TQ1_0/TQ2_0 GGUFs
 - [ ] Survey HuggingFace for 70B IQ1_M / TQ1_0 GGUFs; record sizes + quality reports
 - [ ] Set `OLLAMA_KV_CACHE_TYPE=q8_0` in run.sh and document
