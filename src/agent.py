@@ -4,6 +4,7 @@ import json
 import os
 from .llm import OllamaClient, LLMError
 from .llamacpp_backend import LlamaCppClient
+from .mlx_backend import MlxClient
 from .memory import Memory
 from .tools import load_all
 from .tools import registry
@@ -32,9 +33,9 @@ Rules:
 def _build_llm_client(spec: dict):
     """Build an LLM client from a cascade model spec.
 
-    Spec shape: {"backend": "ollama"|"llamacpp", "ollama": {...},
-    "llamacpp": {...}} — the per-backend dicts take the same keys as the
-    top-level config blocks.
+    Spec shape: {"backend": "ollama"|"llamacpp"|"mlx", "ollama": {...},
+    "llamacpp": {...}, "mlx": {...}} — the per-backend dicts take the same
+    keys as the top-level config blocks.
     """
     backend = spec.get("backend", "ollama")
     if backend == "ollama":
@@ -58,6 +59,16 @@ def _build_llm_client(spec: dict):
             speculative=lc.get("speculative", "off"),
             draft_model_path=lc.get("draft_model_path"),
             draft_n_tokens=lc.get("draft_n_tokens", 10))
+    if backend == "mlx":
+        mc = spec.get("mlx", {})
+        return MlxClient(
+            mc.get("model", "mlx-community/Mistral-7B-Instruct-v0.3-4bit"),
+            mc.get("temperature", 0.6),
+            mc.get("top_p", 1.0),
+            mc.get("max_tokens", 1024),
+            mc.get("repetition_penalty", 1.0),
+            mc.get("seed"),
+            mc.get("adapter_path"))
     raise LLMError(f"unknown cascade model backend: {backend!r}")
 
 
@@ -67,6 +78,9 @@ def _spec_label(spec: dict) -> str:
         return spec.get("ollama", {}).get("model", "?")
     if backend == "llamacpp":
         return os.path.basename(spec.get("llamacpp", {}).get("model_path", "?"))
+    if backend == "mlx":
+        ref = spec.get("mlx", {}).get("model", "?")
+        return ref.rstrip("/").split("/")[-1]
     return backend
 
 
@@ -110,6 +124,19 @@ class Agent:
                 draft_model_path=lc.get("draft_model_path"),
                 draft_n_tokens=lc.get("draft_n_tokens", 10))
             self.model_label = f"llamacpp:{lc.get('model_path', '?')}"
+        elif backend == "mlx":
+            mc = cfg.get("mlx", {})
+            self.llm = MlxClient(
+                mc.get("model", "mlx-community/Mistral-7B-Instruct-v0.3-4bit"),
+                mc.get("temperature", 0.6),
+                mc.get("top_p", 1.0),
+                mc.get("max_tokens", 1024),
+                mc.get("repetition_penalty", 1.0),
+                mc.get("seed"),
+                mc.get("adapter_path"))
+            ref = mc.get("model",
+                         "mlx-community/Mistral-7B-Instruct-v0.3-4bit")
+            self.model_label = f"mlx:{ref.rstrip('/').split('/')[-1]}"
         else:
             oc = cfg["ollama"]
             self.llm = OllamaClient(

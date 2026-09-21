@@ -33,6 +33,24 @@ class TestWiring(unittest.TestCase):
             Agent(cfg)
         self.assertIn("llama-cpp-python is not installed", str(cm.exception))
 
+    def test_mlx_backend_degrades_without_package(self):
+        # Order-independent: temporarily force `import mlx_lm` to fail even
+        # if another test file injected a fake mlx_lm into sys.modules.
+        saved = sys.modules.pop("mlx_lm", None)
+        sys.modules["mlx_lm"] = None
+        try:
+            cfg = load_config()
+            cfg = dict(cfg)
+            cfg["backend"] = "mlx"
+            with self.assertRaises(LLMError) as cm:
+                Agent(cfg)
+            self.assertIn("mlx-lm is not installed", str(cm.exception))
+        finally:
+            if saved is not None:
+                sys.modules["mlx_lm"] = saved
+            else:
+                sys.modules.pop("mlx_lm", None)
+
     def test_estimate_fit_registered(self):
         from src.tools import registry
         from src.tools import fitcheck

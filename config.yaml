@@ -11,6 +11,9 @@ agent:
 #   llamacpp — direct llama.cpp via llama-cpp-python. Unlocks the full GGUF
 #              quant zoo (IQ1_M, TQ1_0, …), KV-cache quantization, and Metal
 #              GPU layers. This is the engine for the 70B quest.
+#   mlx      — Apple-Silicon-native via mlx-lm (macOS only, untested-on-Mac
+#              prototype). Best ~2-bit story on the M1 Pro (oQ/JANG MoE
+#              quants); the likely eventual engine for the 70B quest.
 backend: "ollama"
 
 # Model cascade (opt-in): set backend: "cascade" to keep a small fast model
@@ -56,6 +59,18 @@ llamacpp:
   cache_type_k: "q8_0"
   cache_type_v: "q8_0"
   temperature: 0.6
+
+mlx:
+  # HuggingFace repo id or local model directory, e.g. an mlx-community
+  # quantized model. Example for the 70B quest (experimental, untested):
+  #   model: "<your HF repo id, e.g. an oQ/JANG 35B-A3B MLX quant>"
+  model: "mlx-community/Mistral-7B-Instruct-v0.3-4bit"
+  temperature: 0.6
+  top_p: 1.0
+  max_tokens: 1024       # per reply; the agent loops, so keep this generous
+  repetition_penalty: 1.0
+  # seed: 42            # optional, for reproducible runs
+  # adapter_path: "~/.hearth/adapters/lora"  # optional LoRA adapter
 
 memory:
   total_ram_gb: 16   # machine RAM

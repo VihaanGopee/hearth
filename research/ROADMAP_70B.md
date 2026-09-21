@@ -438,7 +438,33 @@ measuring where quality actually breaks.
       final route) per turn and review after a week of real use to tune
       the keyword set and thresholds; consider a learned router only if
       the rule-based one mis-routes measurably
-- [ ] Prototype MLX backend (mac-only; can't be tested on Linux — needs Justin's Mac)
+- [x] Prototype MLX backend (mac-only; can't be tested on Linux — needs Justin's Mac)
+      — LANDED 2026-09-21 as `src/mlx_backend.py` + opt-in `backend: mlx`
+      wiring (commit 02e4d77, 254 tests green). `MlxClient` wraps mlx-lm's
+      long-stable API (`load` / `generate` / `apply_chat_template`,
+      verified against upstream docs 2026-09-21) with graceful LLMError
+      degradation when mlx-lm is absent. Config: model (HF repo id or local
+      dir), temperature, top_p, max_tokens (1024 default — the agent
+      loops), repetition_penalty, seed, adapter_path. Same
+      chat(messages, tools) interface; tool calls use the standard
+      text-based fallback (tool schemas -> system instruction ->
+      {"tool_calls": [...]} JSON parse, unknown names/malformed JSON fall
+      back to plain text) — marked EXPERIMENTAL, untested-on-Mac. Tool
+      results are folded into user text since chat templates have no tool
+      role. Default `backend: ollama` + `qwen3:8b` untouched. Fake-module
+      tests (19 new) verify prompt construction, sampler mapping, tool
+      parse/fallback, and error paths; real behavior needs the Mac.
+- [ ] Mac-side: MLX backend smoke test — `pip install mlx-lm`,
+      `backend: mlx` with a small mlx-community 4-bit model; confirm
+      chat works, then measure decode tok/s vs the ollama/llamacpp
+      backends at matched quant (needs Justin's Mac)
+- [ ] Mac-side: MLX backend tool-calling reliability — measure how often
+      the text-based {"tool_calls": [...]} parse succeeds on real agent
+      turns vs Ollama's server-side tool calling; if unreliable, consider
+      wiring `mlx_lm.server` (OpenAI-compatible, localhost:8080) as the
+      transport instead of the Python API (needs Justin's Mac)
+- [ ] Hearth: documented MLX recipe for the 35B-A3B (oQ2/JANG MLX quant
+      via the `mlx` backend block or as the cascade big model)
 - [ ] Benchmark harness: quality-vs-quant curves on small models to validate the pipeline
 - [ ] Track BitNet.cpp releases + any 70B ternary model announcement
 - [ ] Track oQ/JANG releases and 2-bit MoE quality reports
