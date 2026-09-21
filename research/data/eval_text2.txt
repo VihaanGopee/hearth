@@ -1,0 +1,29 @@
+The bicycle is the most efficient machine ever built for moving a human
+being. A cyclist converts roughly ninety percent of the energy in each
+pedal stroke into forward motion, a figure no engine has matched. The
+secret is the chain drive: two sprockets of different size, linked by
+steel, trading force for speed with almost no loss to heat.
+
+Early bicycles were absurd. The penny-farthing put the rider atop a wheel
+nearly five feet tall, because gears did not exist yet and speed came
+only from wheel diameter. Stopping meant climbing down, and a pothole
+meant a header over the handlebars. The safety bicycle of the 1880s,
+with two equal wheels and a chain, ended all that in a decade.
+
+Modern frames are drawn from aluminum or carbon fiber, but the geometry
+has barely changed in a century: the diamond frame is a truss, and a
+truss is the stiffest way to connect four points. Tire pressure matters
+more than most riders think. A soft tire deforms against the road and
+bleeds energy; a hard tire skips over bumps and loses grip. The fast
+setup is the one that matches the surface.
+
+Gears are about cadence, not strength. The strongest riders spin near
+ninety revolutions per minute and let the derailleur do the leverage.
+Climbing is arithmetic: watts divided by kilograms, minus the wind. On a
+steep grade the air barely matters; on the flat it is everything, which
+is why racers ride in a line, each sheltering in the slipstream of the
+rider ahead.
+
+Maintenance is simple and honest. A clean chain, true wheels, and brake
+pads with life left in them will carry a bicycle across a continent.
+The machine asks for little and gives back exactly what you put in.

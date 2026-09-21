@@ -202,9 +202,10 @@ measuring where quality actually breaks.
       discriminates below ~10x the fp32 reference; in collapse territory
       report ordering as directional and do not quote ratios as quality
       figures for the 70B case.
-- [ ] Quant R&D: ternary_lloyd perplexity at g64 (SQNR-best group size,
-      ~5 min quantize) — checks whether the g64 SQNR edge (9.95/7.34/7.07
-      dB) buys anything in ppl before the OBQ work changes the picture.
+- [x] Quant R&D: ternary_lloyd perplexity at g64 (SQNR-best group size,
+      ~5 min quantize) — ANSWERED 2026-09-21 (see robustness item):
+      2729.23 @ 1.835 vs 2764.68 @ 1.710 g128 — the SQNR edge buys ~1%
+      ppl at +0.125 bpw. g128 stays the reference config.
 - [ ] Quant R&D: this VM has no optimized BLAS, so one 406-token forward
       pass costs ~40 s (the (T,768)@(768,50257) logits matmul dominates).
       The step-2b per-scheme sweep is ~10 forwards; if that gets slow,
@@ -361,10 +362,32 @@ measuring where quality actually breaks.
       caught: an unregistered dual-scheme name silently mis-decodes in
       reconstruct() via the single-scale fallback — the
       _DUAL_SCALE_SCHEMES registration is load-bearing for correctness.)
-- [ ] Quant R&D: robustness of the g128-vs-g256 ppl gap — the 795 vs 1086
-      verdict is a single eval text (406 tokens, one author) and one
-      seed per run; re-check with a second eval text and a shuffled
-      block sample before locking 795.96 as the OBQ fidelity anchor.
+- [x] Quant R&D: robustness of the g128-vs-g256 ppl gap — PARTIALLY
+      ANSWERED 2026-09-21: second eval text landed
+      (`research/data/eval_text2.txt`, hand-composed non-fiction prose,
+      393 tokens, fp32 ppl 63.18 — sane). int2_kmeans_q8 g128 on text2:
+      **1047.35 @ 2.375 bpw** vs 795.96 on text1. Relative to fp32:
+      16.6x vs 14.9x. The anchor is text-sensitive (~+30% absolute,
+      ~+11% relative): 795.96 is NOT gospel — quote the OBQ anchor as a
+      text-conditioned range and re-measure OBQ candidates on the SAME
+      text(s). Directional verdict holds (still far best, same band).
+      Still open: the "shuffled block sample" half of this item; g256 on
+      text2 (does the g128-beats-g256 verdict transfer? — see new item).
+- [x] Quant R&D: ternary_lloyd perplexity at g64 — ANSWERED 2026-09-21:
+      **2729.23 @ 1.835 bpw** vs 2764.68 @ 1.710 at g128. NO — the g64
+      SQNR edge (7.07 vs ~6.8 dB) buys nothing meaningful in ppl (1.3%
+      better at +0.125 bpw). g128 stays the group size for the ternary
+      reference; the fidelity anchor stays g128 across the board.
+- [ ] Quant R&D: does the g128-beats-g256 ppl verdict transfer to
+      eval_text2 — re-run int2_kmeans_q8 g256 on the second text
+      (~5.5 min). If g128 wins there too, the group-size verdict is
+      text-robust; if it flips, the 795.96 anchor decision was
+      text-luck and OBQ must be multi-text from the start.
+- [ ] Quant R&D: shuffled-block eval sample — sample N disjoint blocks
+      from a longer corpus (keeping the tokenizer + harness unchanged)
+      and report mean/std of ppl per scheme; replaces the
+      single-contiguous-block protocol whose text sensitivity the
+      text2 probe just demonstrated.
 - [ ] Quant R&D: OBQ first slice — before a full GPTQ-style pass,
       implement per-group empirical-Fisher reweighting of the Lloyd
       centroid fit only (diagonal Hessian from a few fp32 forward
