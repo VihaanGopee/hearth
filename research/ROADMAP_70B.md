@@ -140,10 +140,23 @@ measuring where quality actually breaks.
       distribution caveat is closed, the PPL caveat is not.
 - [ ] Quant R&D: validate candidates on a real tiny model (60–130M params,
       CPU-friendly) — real perplexity vs the synthetic SQNR ranking.
-      Step 1 landed (real-weight SQNR probe above); step 2 is a numpy
-      GPT-2 forward pass over research/data/gpt2.safetensors measuring
-      perplexity per scheme on a few hundred tokens of text. The parser,
-      tensor selection, and sampled-block harness all exist already.
+      Step 1 landed (real-weight SQNR probe above); step 2a LANDED
+      2026-09-21 as `src/quant_rnd/gpt2_forward.py` + `gpt2_tokenizer.py`
+      (commit 48dd13e, 116 tests green): dependency-free NumPy GPT-2 124M
+      forward pass and byte-level BPE tokenizer over
+      research/data/gpt2.safetensors. fp32 reference: **perplexity 53.50**
+      on 406 tokens of hand-composed ASCII prose
+      (research/data/eval_text.txt) — sane band for GPT-2 124M, so the
+      forward pass is verified end to end. The parser, tensor selection,
+      and sampled-block harness all exist already. Step 2b (next):
+      per-scheme quantized perplexity — quantize every linear weight
+      group-wise with each scheme, reconstruct, forward, compare ppl
+      against the 53.50 reference and the synthetic SQNR ranking.
+- [ ] Quant R&D: this VM has no optimized BLAS, so one 406-token forward
+      pass costs ~40 s (the (T,768)@(768,50257) logits matmul dominates).
+      The step-2b per-scheme sweep is ~10 forwards; if that gets slow,
+      chunk the logits matmul or shorten the eval text. The fp32 53.50
+      reference is logged and reproducible either way.
 - [x] Quant R&D: group-size sensitivity of the real-weight ranking —
       ANSWERED 2026-09-21: re-ran realweights.py at g64 and g256
       (CLI gained a `--group-size` flag, `parse_args` factored for
