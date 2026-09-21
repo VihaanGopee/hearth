@@ -62,7 +62,8 @@ DEFAULT_SWEEP = [
 def quantize_model(tensors: dict, scheme_name: str,
                    group_size: int = GROUP_SIZE,
                    sample_weights: dict | None = None,
-                   quantize_embeddings: bool = False) -> tuple:
+                   quantize_embeddings: bool = False,
+                   only_names: set | None = None) -> tuple:
     """Quantize + reconstruct every linear weight with `scheme_name`.
 
     Returns (weights, bpw): a new {name: float32 ndarray} dict with the
@@ -77,6 +78,11 @@ def quantize_model(tensors: dict, scheme_name: str,
     weight tables only, and per the roadmap item this is the protocol
     variant being compared against the fp32-embedding reference. bpw is
     unchanged by the flag (same scheme, same group size).
+
+    `only_names`: restrict quantization targets to this subset of tensor
+    names (must be linear/embedding names as applicable); everything else
+    passes through fp32. None (default) keeps the original behavior of
+    quantizing every linear weight.
 
     `sample_weights`: optional {tensor_name: flat per-weight importance}
     (see fisher.per_weight_importance). It is passed as `sample_weight=`
@@ -93,6 +99,11 @@ def quantize_model(tensors: dict, scheme_name: str,
     targets = set(linear)
     if quantize_embeddings:
         targets |= {n for n in tensors if is_embedding(n)}
+    if only_names is not None:
+        unknown = set(only_names) - set(tensors)
+        if unknown:
+            raise KeyError(f"only_names has unknown tensors: {sorted(unknown)}")
+        targets &= set(only_names)
     out = {}
     bpw = None
     for name, t in tensors.items():
@@ -110,6 +121,36 @@ def quantize_model(tensors: dict, scheme_name: str,
     return out, bpw
 
 
+def quantize_one_layer_obq(tensors: dict, token_ids,
+                           layer_name: str,
+                           group_size: int = GROUP_SIZE,
+                           damp_frac: float = 0.01) -> tuple:
+    """Quantize ONE linear layer with OBQ error compensation; rest fp32.
+
+    Returns (weights, bpw) like quantize_model. The layer's fp32 input
+    activations are captured from one forward pass over `token_ids`
+    (fisher.capture_linear_inputs); the Hessian is built from them and
+    obq.quantize_layer_obq does the GPTQ-style block update with the
+    int2_kmeans_q8-equivalent per-column codebook (same 2.375 bpw @ g128
+    as the naive anchor, so the perplexity delta is apples-to-apples).
+    """
+    from .fisher import capture_linear_inputs
+    from .obq import quantize_layer_obq
+    linear = linear_weight_tensors(tensors)
+    if layer_name not in linear:
+        raise KeyError(f"{layer_name!r} is not a linear weight matrix; "
+                       f"have {len(linear)} linears")
+    inputs = capture_linear_inputs(tensors, token_ids)
+    if layer_name not in inputs:
+        raise KeyError(f"no captured activations for {layer_name!r}")
+    Wq, bpw = quantize_layer_obq(linear[layer_name], inputs[layer_name],
+                                 group_size=group_size, damp_frac=damp_frac)
+    out = {n: np.ascontiguousarray(t, dtype=np.float32)
+           for n, t in tensors.items()}
+    out[layer_name] = Wq.reshape(tensors[layer_name].shape)
+    return out, bpw
+
+
 def perplexity_of(tensors: dict, token_ids) -> float:
     """Perplexity of a float32 weight dict on a token id sequence."""
     return GPT2(tensors).perplexity(token_ids)
@@ -118,14 +159,16 @@ def perplexity_of(tensors: dict, token_ids) -> float:
 def run_sweep(tensors: dict, token_ids, scheme_names: list,
               group_size: int = GROUP_SIZE,
               sample_weights: dict | None = None,
-              quantize_embeddings: bool = False) -> list:
+              quantize_embeddings: bool = False,
+              only_names: set | None = None) -> list:
     """Quantize + forward per scheme; results sorted by perplexity asc."""
     results = []
     for name in scheme_names:
         t0 = time.time()
         qw, bpw = quantize_model(tensors, name, group_size,
                                  sample_weights=sample_weights,
-                                 quantize_embeddings=quantize_embeddings)
+                                 quantize_embeddings=quantize_embeddings,
+                                 only_names=only_names)
         ppl = perplexity_of(qw, token_ids)
         dt = time.time() - t0
         results.append({"scheme": name, "ppl": ppl, "bpw": bpw,
@@ -163,6 +206,18 @@ def parse_args(argv: list | None = None) -> argparse.Namespace:
                          "fp32. Ablation vs the default weight-only "
                          "protocol (see roadmap: is the 795 anchor limited "
                          "by the fp32 passthrough parts?)")
+    ap.add_argument("--one-layer", default=None, metavar="NAME",
+                    help="quantize only the named linear tensor (rest "
+                         "fp32); for isolating one layer's contribution, "
+                         "e.g. h.0.attn.c_attn.weight")
+    ap.add_argument("--obq", action="store_true",
+                    help="quantize the --one-layer tensor with OBQ "
+                         "error compensation (GPTQ-style block update, "
+                         "int2_kmeans_q8-equivalent codebook) instead of "
+                         "the flat-array scheme; requires --one-layer")
+    ap.add_argument("--obq-damp", type=float, default=0.01,
+                    help="Hessian damping fraction for --obq "
+                         "(default 0.01, the GPTQ convention)")
     return ap.parse_args(argv)
 
 
@@ -179,7 +234,24 @@ def main() -> None:
         text = f.read()
     ids = GPT2Tokenizer(args.tokenizer_dir).encode(text)
     print(f"eval text: {len(ids)} tokens")
+    if args.obq and not args.one_layer:
+        raise SystemExit("--obq requires --one-layer NAME")
+    if args.obq:
+        t0 = time.time()
+        print(f"OBQ-quantizing {args.one_layer} "
+              f"(damp {args.obq_damp})...", flush=True)
+        qw, bpw = quantize_one_layer_obq(tensors, ids, args.one_layer,
+                                        args.group_size, args.obq_damp)
+        ppl = perplexity_of(qw, ids)
+        dt = time.time() - t0
+        print(f"{'int2_kmeans_q8+obq':<22} ppl {ppl:8.2f}  "
+              f"bpw {bpw:5.3f}  ({dt:5.1f} s)")
+        return
     scheme_names = [s for s in args.schemes.split(",") if s]
+    only = {args.one_layer} if args.one_layer else None
+    if only:
+        print(f"one-layer mode: only {args.one_layer} quantized, "
+              "rest fp32")
     sample_weights = None
     if args.fisher:
         from .fisher import per_weight_importance
@@ -190,7 +262,8 @@ def main() -> None:
               "sample_weight (int2_kmeans_q8)", flush=True)
     results = run_sweep(tensors, ids, scheme_names, args.group_size,
                         sample_weights=sample_weights,
-                        quantize_embeddings=args.quantize_embeddings)
+                        quantize_embeddings=args.quantize_embeddings,
+                        only_names=only)
     print_report(results)
 
 

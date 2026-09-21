@@ -65,6 +65,11 @@ def __getattr__(name):
         from . import gpt2_tokenizer as _gt
 
         return getattr(_gt, name)
+    if name in ("inverse_hessian", "quantize_layer_obq",
+                "hessian_weighted_sse"):
+        from . import obq as _obq
+
+        return getattr(_obq, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
@@ -106,4 +111,7 @@ __all__ = [
     "layer_norm",
     "attention",
     "GPT2Tokenizer",
+    "inverse_hessian",
+    "quantize_layer_obq",
+    "hessian_weighted_sse",
 ]

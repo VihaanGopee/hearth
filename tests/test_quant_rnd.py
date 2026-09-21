@@ -1292,6 +1292,7 @@ from src.quant_rnd.ppl import (
     parse_args as ppl_parse_args,
     perplexity_of,
     quantize_model,
+    quantize_one_layer_obq,
 )
 
 
@@ -1358,6 +1359,52 @@ class TestQuantizeModel(unittest.TestCase):
         _, bpw = quantize_model(self._fake_dict(), "int2_kmeans_q8",
                                 group_size=32)
         self.assertAlmostEqual(bpw, 2.0 + 4 * 8 / 32 + 16 / 32, places=9)
+
+    def test_only_names_restricts_targets(self):
+        fake = self._fake_dict()
+        out, _ = quantize_model(fake, "int2_kmeans_q8", group_size=32,
+                                only_names={"h.0.mlp.c_fc.weight"})
+        # the named layer is quantized...
+        self.assertFalse(np.allclose(out["h.0.mlp.c_fc.weight"],
+                                     fake["h.0.mlp.c_fc.weight"]))
+        # ...the other linear passes through fp32 unchanged...
+        np.testing.assert_array_equal(out["h.0.attn.c_proj.weight"],
+                                      fake["h.0.attn.c_proj.weight"])
+        # ...and so do the non-linear tensors.
+        np.testing.assert_array_equal(out["wte.weight"], fake["wte.weight"])
+
+    def test_only_names_unknown_raises(self):
+        with self.assertRaises(KeyError):
+            quantize_model(self._fake_dict(), "int2_kmeans_q8",
+                           group_size=32, only_names={"nope.weight"})
+
+    def test_only_names_none_is_default_all_linear(self):
+        a, _ = quantize_model(self._fake_dict(), "int2_symmetric",
+                              group_size=32, only_names=None)
+        b, _ = quantize_model(self._fake_dict(), "int2_symmetric",
+                              group_size=32)
+        for k in a:
+            np.testing.assert_array_equal(a[k], b[k])
+
+    def test_one_layer_obq_unknown_layer_raises(self):
+        with self.assertRaises(KeyError):
+            quantize_one_layer_obq(self._fake_dict(), [1, 2, 3],
+                                   "nope.weight")
+
+    def test_cli_one_layer_obq_flags(self):
+        args = ppl_parse_args(["m.safetensors", "--one-layer",
+                               "h.0.attn.c_attn.weight", "--obq"])
+        self.assertEqual(args.one_layer, "h.0.attn.c_attn.weight")
+        self.assertTrue(args.obq)
+        self.assertAlmostEqual(args.obq_damp, 0.01)
+        args = ppl_parse_args(["m.safetensors", "--one-layer",
+                               "h.0.attn.c_attn.weight", "--obq",
+                               "--obq-damp", "0.05"])
+        self.assertAlmostEqual(args.obq_damp, 0.05)
+        # defaults: off
+        args = ppl_parse_args(["m.safetensors"])
+        self.assertIsNone(args.one_layer)
+        self.assertFalse(args.obq)
 
     def test_cli_scheme_parsing(self):
         # parse_args is factored for testability (same pattern as

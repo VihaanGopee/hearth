@@ -418,15 +418,30 @@ measuring where quality actually breaks.
       NOT bother with a Fisher-weighted ternary_lloyd variant.
       Caveats: diagonal Hessian only; calibrated on the eval text
       itself (no held-out corpus on this VM yet).
-- [ ] Quant R&D: full per-weight error-compensation prototype
-      (GPTQ/OBQ-style) — the Fisher-centroid slice moved ppl ~0, so the
-      honest next fidelity step is quantizing weights sequentially with
-      Hessian-guided error compensation into not-yet-quantized weights.
-      Slice it: start with one layer (c_attn), full-model second;
-      measure ppl delta vs the 795.96 anchor at g128. Needs the
-      activation-capture plumbing from fisher.py (already landed) plus a
-      per-layer X^T X inverse (or damped diagonal) — the inverse is the
-      hard part on this VM, consider a block-wise / iterative solve.
+- [x] Quant R&D: full per-weight error-compensation prototype
+      (GPTQ/OBQ-style) — ONE-LAYER SLICE LANDED 2026-09-21 as
+      `src/quant_rnd/obq.py` + `ppl.py --one-layer/--obq` (167 tests
+      green). Damped inverse Hessian (Cholesky; 1% GPTQ damping,
+      load-bearing: T=406 < d_in=768 so H is rank-deficient), GPTQ block
+      update over input-channel rows, per-column 4-centroid Lloyd +
+      8-bit codebook = int2_kmeans_q8 math at matched 2.375 bpw.
+      Unit-verified: single-block == naive bit-identical; compensation
+      strictly reduces the Hessian-weighted objective; block update
+      pinned against a manual formula recomputation. Measured on
+      h.0.attn.c_attn (768x2304), eval_text1: naive one-layer 53.34 vs
+      OBQ one-layer **52.65** vs fp32 53.50 — directionally right at
+      matched bitrate, machinery verified end to end. BUT: one layer is
+      ~1.4% of params, so the probe is near the noise floor — the real
+      verdict needs the full-model slice below.
+- [ ] Quant R&D: OBQ full-model slice — apply quantize_layer_obq to all
+      48 linear layers (one capture forward already gets every layer's
+      X; per-layer Hessian inverse + block update, ~10-15 min on this
+      VM) and measure ppl vs the 795.96 naive anchor at g128. Wire as
+      `ppl.py --obq-all` reusing quantize_model's target loop. Decision
+      rule: if full-model OBQ exits collapse territory materially
+      (< ~400 ppl), the fidelity path is alive; if delta ~0, the
+      Hessian-second-order story is exhausted on GPT-2 124M at this
+      scale and the honest conclusion is logged.
 - [ ] Quant R&D: 1-step Lloyd re-fit of centroids is already the cheap
       fitted-ternary encoder; check whether its measured 0.41 zero-rate
       (vs 0.31 uniform) can be raised toward 0.5 (more sparsity -> more
