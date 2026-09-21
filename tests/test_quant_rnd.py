@@ -51,6 +51,7 @@ from src.quant_rnd.opcount import (
     is_bandwidth_bound,
     kv_cache_bytes,
     measured_sparsity,
+    prefill_crossover_L,
     prefill_roofline_tps,
     scheme_report,
     side_fractions,
@@ -698,6 +699,77 @@ class TestOpCount(unittest.TestCase):
                                4.0 * p4["attention_flops"], delta=1.0)
         with self.assertRaises(ValueError):
             prefill_roofline_tps(prompt_len=L, n_q_heads=0, **kw)
+
+    def test_prefill_crossover_L_reference_pair(self):
+        # The pinned crossover for the reference pair at 70B scale /
+        # 200 GB/s / 5.2 TFLOPS peak (M1 Pro GPU published figure):
+        # ternary_1step (1.710 bpw, measured sparsity 0.41) vs
+        # int2_kmeans_q8 (2.375 bpw, histogram dequant). The prefill
+        # ceiling ratio compresses from 1.63x at 4k toward 1 as the
+        # scheme-independent attention O(L^2) term swamps the matmul
+        # difference, dropping below 1.2x between 32k and 64k.
+        op_t = ternary_opcount(0.41, n_scales=1, group_size=128)
+        op_k = codebook_opcount(128, n_centroids=4, n_scales=1,
+                               method="histogram")
+        kw = dict(n_params=N_PARAMS_70B, bandwidth_gbs=M1_PRO_MEM_BW_GBS,
+                  peak_flops=5.2e12, n_layers=80, n_q_heads=64,
+                  n_kv_heads=8, head_dim=128)
+        r = prefill_crossover_L(op_t, 1.710, op_k, 2.375, **kw)
+        self.assertEqual(r["crossover_L"], 65536)
+        self.assertFalse(r["below_at_start"])
+        self.assertEqual(r["prompt_lens"],
+                         [4096, 8192, 16384, 32768, 65536, 131072])
+        ratios = r["ratios"]
+        self.assertEqual(len(ratios), 6)
+        # The ratio compresses monotonically toward 1 with context.
+        for a, b in zip(ratios, ratios[1:]):
+            self.assertLess(b, a)
+        self.assertAlmostEqual(ratios[0], 1.629, delta=0.01)
+        self.assertAlmostEqual(ratios[3], 1.259, delta=0.01)
+        self.assertAlmostEqual(ratios[5], 1.086, delta=0.01)
+        self.assertGreater(ratios[-1], 1.0)
+        # Per-L ceilings are sane (monotone, same length as lens).
+        self.assertEqual(len(r["ceil_a_tps"]), 6)
+        self.assertEqual(len(r["ceil_b_tps"]), 6)
+        # Prefill tok/s falls with L: attention O(L^2) FLOPs and KV/act
+        # traffic grow per token while weight bytes are amortized once.
+        self.assertGreater(r["ceil_a_tps"][0], r["ceil_a_tps"][1])
+
+    def test_prefill_crossover_L_edges(self):
+        op_t = ternary_opcount(0.41, n_scales=1, group_size=128)
+        op_k = codebook_opcount(128, n_centroids=4, n_scales=1,
+                               method="histogram")
+        kw = dict(n_params=N_PARAMS_70B, bandwidth_gbs=M1_PRO_MEM_BW_GBS,
+                  peak_flops=5.2e12)
+        # threshold 1.0: A is strictly cheaper in FLOPs and bytes, so
+        # the ratio can never dip below 1 -> no crossover.
+        r = prefill_crossover_L(op_t, 1.710, op_k, 2.375, threshold=1.0,
+                               **kw)
+        self.assertIsNone(r["crossover_L"])
+        self.assertFalse(r["below_at_start"])
+        # Already below at the first swept length: crossover reports
+        # that length and flags below_at_start.
+        r = prefill_crossover_L(op_t, 1.710, op_k, 2.375,
+                               prompt_lens=(131072,), threshold=1.2, **kw)
+        self.assertTrue(r["below_at_start"])
+        self.assertEqual(r["crossover_L"], 131072)
+        # Custom thresholds move the crossover: 1.5x is crossed earlier.
+        r = prefill_crossover_L(op_t, 1.710, op_k, 2.375, threshold=1.5,
+                               **kw)
+        self.assertEqual(r["crossover_L"], 16384)
+        # Validation.
+        with self.assertRaises(ValueError):
+            prefill_crossover_L(op_t, 1.710, op_k, 2.375, threshold=0.0,
+                               **kw)
+        with self.assertRaises(ValueError):
+            prefill_crossover_L(op_t, 1.710, op_k, 2.375, prompt_lens=(),
+                               **kw)
+        with self.assertRaises(ValueError):
+            prefill_crossover_L(op_t, 1.710, op_k, 2.375,
+                               prompt_lens=(8192, 4096), **kw)
+        with self.assertRaises(ValueError):
+            prefill_crossover_L(op_t, 1.710, op_k, 2.375,
+                               prompt_lens=(4096, 4096), **kw)
 
 
 class TestTernaryLloyd(unittest.TestCase):

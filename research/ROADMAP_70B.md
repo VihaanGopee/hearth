@@ -344,10 +344,24 @@ measuring where quality actually breaks.
       very long context, while decode (bandwidth-bound, attention
       O(L^2) absent from decode per-token) keeps the 1.36x ratio. The
       "under-count at 128k" caveat is now closed.
-- [ ] Quant R&D: crossover context length — at what prompt length does
-      the attention term compress the ternary-vs-kmeans prefill ceiling
-      ratio below ~1.2x? (prefill_roofline_tps has the knobs; a small
-      script over L in {4k, 8k, 16k, 32k, 64k, 128k} would pin it)
+- [x] Quant R&D: crossover context length — PINNED 2026-09-21 via
+      `prefill_crossover_L` in opcount.py (205 tests green). For the
+      reference pair (ternary_1step 1.710 bpw vs int2_kmeans_q8 2.375 bpw,
+      70B scale / 200 GB/s / 5.2 TFLOPS peak): prefill ceiling ratios
+      4k=1.63x, 8k=1.52x, 16k=1.39x, 32k=1.26x, 64k=1.15x, 128k=1.09x.
+      The ratio drops below 1.2x between 32k and 64k (crossover_L=65536),
+      below 1.5x at 16384. Practical read: the ternary prefill compute
+      case survives at ordinary prompt lengths (<=32k) but compresses to
+      noise at 64k+; decode (bandwidth-bound, no attention term) keeps
+      the 1.36x ratio at ALL context lengths. Crossover is a model
+      output (70B-shaped Llama geometry, GQA-8, head_dim 128) — re-pin
+      if the target architecture changes.
+- [ ] Quant R&D: Mac-side validation of the crossover — on Justin's Mac,
+      measure prefill tok/s for matched-size ternary/TQ1_0 vs 2-bit
+      codebook models at prompt lengths spanning 4k-64k and check
+      whether the measured ratio curve tracks the model's 1.63 -> 1.15x
+      compression (needs Justin's Mac; extends both prefill-validation
+      items below)
 - [ ] Quant R&D: if a candidate holds up on real perplexity, design the
       ggml CPU kernel (ternary add/sub path) + upstream write-up/PR
 - [x] Quant R&D: add a K-means (Lloyd) 2-bit baseline — the fair classical

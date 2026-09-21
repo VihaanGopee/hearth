@@ -304,3 +304,63 @@ def print_report(rows: list) -> None:
         print(f"{r['scheme']:<22}{r['bpw']:>7.3f}{r['weight_GB']:>8.2f}"
               f"{r['roofline_tps']:>10.1f}{r['adds_per_w']:>8.3f}"
               f"{r['muls_per_w']:>8.4f}{r['equiv_adds_per_w']:>10.3f}")
+
+
+def prefill_crossover_L(op_a: dict, bpw_a: float, op_b: dict, bpw_b: float,
+                        *, prompt_lens=(4096, 8192, 16384, 32768, 65536,
+                                        131072),
+                        threshold: float = 1.2,
+                        **roofline_kwargs) -> dict:
+    """Sweep prefill ceilings over prompt lengths and pin where scheme A's
+    advantage over scheme B compresses below `threshold`.
+
+    Motivation: in the compute-bound prefill regime the ceiling ratio of
+    two quant schemes is the FLOP-per-weight ratio (peak and efficiency
+    cancel). The scheme-INDEPENDENT attention O(L^2) term swamps that
+    difference as L grows, so the ratio falls toward 1. This function
+    answers "at what prompt length does the prefill compute case for A
+    over B compress below <threshold>x?".
+
+    op_a / bpw_a are scheme A's per-weight op-count dict and bits/param
+    (A is the scheme expected to be faster, so ratios sit above 1);
+    op_b / bpw_b likewise for B. roofline_kwargs are forwarded to
+    prefill_roofline_tps (must include bandwidth_gbs and peak_flops).
+
+    Returns a dict with the swept lens, per-L ceilings and ratios, and
+    "crossover_L": the first prompt length where the ratio drops below
+    threshold, or None if it never does within the swept range (plus
+    "below_at_start" True when it is already below at the first length).
+    """
+    if threshold <= 0:
+        raise ValueError("threshold must be positive")
+    lens = list(prompt_lens)
+    if not lens:
+        raise ValueError("prompt_lens must be non-empty")
+    if any(not isinstance(L, (int, np.integer)) or L < 1 for L in lens):
+        raise ValueError("prompt_lens must be positive integers")
+    if any(b <= a for a, b in zip(lens, lens[1:])):
+        raise ValueError("prompt_lens must be strictly increasing")
+    ratios, ceil_a, ceil_b = [], [], []
+    for L in lens:
+        ca = prefill_roofline_tps(prompt_len=int(L), opcount=op_a,
+                                  bpw=bpw_a, **roofline_kwargs)["ceil_tps"]
+        cb = prefill_roofline_tps(prompt_len=int(L), opcount=op_b,
+                                  bpw=bpw_b, **roofline_kwargs)["ceil_tps"]
+        ceil_a.append(ca)
+        ceil_b.append(cb)
+        ratios.append(ca / cb)
+    below_at_start = ratios[0] < threshold
+    crossover_L = None
+    for L, r in zip(lens, ratios):
+        if r < threshold:
+            crossover_L = int(L)
+            break
+    return {
+        "prompt_lens": [int(L) for L in lens],
+        "ceil_a_tps": ceil_a,
+        "ceil_b_tps": ceil_b,
+        "ratios": ratios,
+        "threshold": threshold,
+        "below_at_start": below_at_start,
+        "crossover_L": crossover_L,
+    }
