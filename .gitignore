@@ -1,4 +1,9 @@
 .venv/
 __pycache__/
 *.pyc
-research/data/
+research/data/*
+# ...except the small reproducibility files the perplexity harness needs
+# (tokenizer tables + eval text). The multi-GB model weights stay ignored.
+!research/data/eval_text.txt
+!research/data/tokenizer/
+!research/data/tokenizer/*

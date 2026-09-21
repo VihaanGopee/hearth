@@ -33,6 +33,14 @@ from src.quant_rnd.realweights import (
     sample_groups,
 )
 from src.quant_rnd.sweep import CONFIGS, pareto_frontier, run_sweep
+from src.quant_rnd.gpt2_tokenizer import GPT2Tokenizer
+from src.quant_rnd.gpt2_forward import (
+    GPT2,
+    attention,
+    gelu,
+    layer_norm,
+    load_gpt2,
+)
 from src.quant_rnd.opcount import (
     M1_PRO_MEM_BW_GBS,
     N_PARAMS_70B,
@@ -1044,6 +1052,176 @@ class TestRealWeights(unittest.TestCase):
         # classical Lloyd reference on top at every group size
         for order in orders.values():
             self.assertEqual(order[0], "int2_kmeans_q8")
+
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TOKENIZER_DIR = os.path.join(REPO_ROOT, "research", "data", "tokenizer")
+GPT2_WEIGHTS = os.path.join(REPO_ROOT, "research", "data", "gpt2.safetensors")
+EVAL_TEXT = os.path.join(REPO_ROOT, "research", "data", "eval_text.txt")
+
+
+def _read_eval_text() -> str:
+    with open(EVAL_TEXT, encoding="utf-8") as f:
+        return f.read()
+
+
+class TestGPT2Tokenizer(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not os.path.isdir(TOKENIZER_DIR):
+            raise unittest.SkipTest("tokenizer data not present")
+
+    def _tok(self):
+        return GPT2Tokenizer(TOKENIZER_DIR)
+
+    def test_roundtrip_ascii_prose(self):
+        tok = self._tok()
+        text = _read_eval_text()
+        self.assertEqual(tok.decode(tok.encode(text)), text)
+
+    def test_roundtrip_tricky_ascii(self):
+        tok = self._tok()
+        text = "Don't stop: 3.14 is pi-ish (well, roughly).\nNew\tlines\r\n too!"
+        self.assertEqual(tok.decode(tok.encode(text)), text)
+
+    def test_roundtrip_non_ascii_falls_back_to_bytes(self):
+        # The pre-tokenizer pattern is ASCII-safe; non-ASCII chars must
+        # still round-trip via the byte-level fallback, never crash.
+        tok = self._tok()
+        text = "caf\u00e9 na\u00efve \u4e2d\u6587"
+        self.assertEqual(tok.decode(tok.encode(text)), text)
+
+    def test_deterministic(self):
+        tok = self._tok()
+        text = "The quick brown fox jumps over 13 lazy dogs."
+        self.assertEqual(tok.encode(text), tok.encode(text))
+
+    def test_ids_in_vocab_range(self):
+        tok = self._tok()
+        ids = tok.encode(_read_eval_text())
+        self.assertTrue(len(ids) > 300)  # a few hundred tokens of text
+        self.assertTrue(all(0 <= i < tok.vocab_size for i in ids))
+
+    def test_bpe_goldens_from_merge_table(self):
+        # ' t' and 'he' are merge products early in merges.txt
+        # ("\u0120 t" is rank 0, "h e" is rank 2), so each must encode
+        # to a single token id. Derives goldens from the table itself.
+        tok = self._tok()
+        self.assertEqual(len(tok.encode(" t")), 1)
+        self.assertEqual(len(tok.encode("he")), 1)
+        self.assertEqual(tok.encode(" t")[0], tok.encoder["\u0120t"])
+        self.assertEqual(tok.encode("he")[0], tok.encoder["he"])
+
+    def test_contraction_splits_like_gpt2(self):
+        # GPT-2's pre-tokenizer splits "don't" into "don" + "'t".
+        tok = self._tok()
+        ids = tok.encode("don't")
+        self.assertEqual(len(ids), 2)
+        self.assertEqual(tok.decode(ids), "don't")
+
+
+class TestGPT2ForwardMath(unittest.TestCase):
+    def test_gelu_matches_erf_definition(self):
+        rng = np.random.default_rng(0)
+        x = (rng.standard_normal(2000) * 3).astype(np.float32)
+        ref = 0.5 * x * (1.0 + np.vectorize(math.erf)(x / math.sqrt(2.0)))
+        np.testing.assert_allclose(gelu(x), ref, rtol=1e-5, atol=1e-6)
+
+    def test_layer_norm_matches_definition(self):
+        rng = np.random.default_rng(1)
+        x = (rng.standard_normal((5, 32)) * 2 + 1).astype(np.float32)
+        w = rng.standard_normal(32).astype(np.float32)
+        b = rng.standard_normal(32).astype(np.float32)
+        mu = x.mean(-1, keepdims=True)
+        var = ((x - mu) ** 2).mean(-1, keepdims=True)
+        ref = (x - mu) / np.sqrt(var + 1e-5) * w + b
+        np.testing.assert_allclose(layer_norm(x, w, b), ref,
+                                   rtol=1e-6, atol=1e-6)
+
+    def test_layer_norm_unit_output_stats(self):
+        rng = np.random.default_rng(2)
+        x = (rng.standard_normal((7, 64)) * 5 - 3).astype(np.float32)
+        w = np.ones(64, dtype=np.float32)
+        b = np.zeros(64, dtype=np.float32)
+        y = layer_norm(x, w, b)
+        np.testing.assert_allclose(y.mean(-1), np.zeros(7), atol=1e-5)
+        np.testing.assert_allclose(y.var(-1), np.ones(7), atol=1e-5)
+
+    def test_attention_matches_naive_reference(self):
+        # Independent triple-loop causal attention vs the vectorized path.
+        rng = np.random.default_rng(3)
+        t, c, n_head = 6, 8, 2
+        hd = c // n_head
+        x = rng.standard_normal((t, c)).astype(np.float32)
+        w_qkv = rng.standard_normal((c, 3 * c)).astype(np.float32) * 0.3
+        b_qkv = rng.standard_normal(3 * c).astype(np.float32) * 0.1
+        w_proj = rng.standard_normal((c, c)).astype(np.float32) * 0.3
+        b_proj = rng.standard_normal(c).astype(np.float32) * 0.1
+        got = attention(x, w_qkv, b_qkv, w_proj, b_proj, n_head)
+
+        qkv = x @ w_qkv + b_qkv
+        q = qkv[:, :c].reshape(t, n_head, hd)
+        k = qkv[:, c:2 * c].reshape(t, n_head, hd)
+        v = qkv[:, 2 * c:].reshape(t, n_head, hd)
+        out = np.zeros((t, n_head, hd), dtype=np.float32)
+        for h in range(n_head):
+            for i in range(t):
+                s = np.array([q[i, h] @ k[j, h] / math.sqrt(hd)
+                              for j in range(i + 1)])
+                e = np.exp(s - s.max())
+                a = e / e.sum()
+                out[i, h] = sum(a[j] * v[j, h] for j in range(i + 1))
+        ref = out.reshape(t, c) @ w_proj + b_proj
+        np.testing.assert_allclose(got, ref, rtol=1e-5, atol=1e-5)
+
+
+@unittest.skipUnless(os.path.exists(GPT2_WEIGHTS), "gpt2 weights not present")
+class TestGPT2RealWeights(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.model = load_gpt2(GPT2_WEIGHTS)
+        cls.tok = GPT2Tokenizer(TOKENIZER_DIR)
+        cls.ids = cls.tok.encode(_read_eval_text())
+
+    def test_config_matches_gpt2_124m(self):
+        m = self.model
+        self.assertEqual((m.n_layer, m.n_embd, m.n_head), (12, 768, 12))
+        self.assertEqual((m.vocab_size, m.n_ctx), (50257, 1024))
+
+    def test_forward_shape_and_finite(self):
+        logits = self.model.forward(self.ids[:16])
+        self.assertEqual(logits.shape, (16, 50257))
+        self.assertTrue(np.all(np.isfinite(logits)))
+
+    def test_forward_deterministic(self):
+        a = self.model.forward(self.ids[:16])
+        b = self.model.forward(self.ids[:16])
+        np.testing.assert_array_equal(a, b)
+
+    def test_causality(self):
+        # Changing only the last token must not move earlier logits:
+        # logits[i] may only depend on tokens <= i.
+        ids_a = self.ids[:16]
+        ids_b = list(ids_a)
+        ids_b[-1] = (ids_b[-1] + 1) % self.model.vocab_size
+        la = self.model.forward(ids_a)
+        lb = self.model.forward(ids_b)
+        np.testing.assert_allclose(la[:15], lb[:15], rtol=1e-6, atol=1e-6)
+        self.assertFalse(np.allclose(la[15], lb[15]))
+
+    def test_forward_rejects_overlong_sequence(self):
+        with self.assertRaises(ValueError):
+            self.model.forward([0] * (self.model.n_ctx + 1))
+
+    def test_fp32_perplexity_sane(self):
+        # The end-to-end architecture check: a broken forward pass
+        # (wrong mask, wrong LN, wrong gelu, untied head) gives ppl in
+        # the thousands; random logits give ~50257. fp32 GPT-2 124M on
+        # plain English prose must land well under 500.
+        ppl = self.model.perplexity(self.ids[:64])
+        self.assertTrue(math.isfinite(ppl))
+        self.assertGreater(ppl, 1.0)
+        self.assertLess(ppl, 500.0)
 
 
 if __name__ == "__main__":

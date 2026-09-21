@@ -16,6 +16,11 @@ Honest limits, stated up front:
   (dependency-free .safetensors parser) to check whether the synthetic
   ranking reproduces on real distributions. Still a proxy for perplexity,
   but it removes the "synthetic distribution" caveat.
+- gpt2_tokenizer.py + gpt2_forward.py close the perplexity gap: a
+  dependency-free GPT-2 byte-level BPE tokenizer and NumPy forward pass
+  over research/data/gpt2.safetensors, giving a real fp32 perplexity
+  reference on a few hundred tokens of text. Per-scheme quantized
+  perplexity is the next step.
 """
 from .schemes import (
     QuantResult,
@@ -52,6 +57,14 @@ def __getattr__(name):
         from . import realweights as _rw
 
         return getattr(_rw, name)
+    if name in ("GPT2", "load_gpt2", "gelu", "layer_norm", "attention"):
+        from . import gpt2_forward as _gf
+
+        return getattr(_gf, name)
+    if name == "GPT2Tokenizer":
+        from . import gpt2_tokenizer as _gt
+
+        return getattr(_gt, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
@@ -87,4 +100,10 @@ __all__ = [
     "linear_weight_tensors",
     "sample_groups",
     "rank_on_real_weights",
+    "GPT2",
+    "load_gpt2",
+    "gelu",
+    "layer_norm",
+    "attention",
+    "GPT2Tokenizer",
 ]
