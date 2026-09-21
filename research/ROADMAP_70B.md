@@ -165,15 +165,29 @@ measuring where quality actually breaks.
       negative); the fidelity path needs second-order correction (see
       follow-ups below). The opcount compute-advantage story is
       untouched — it never depended on pure group-wise usability.
-- [ ] Quant R&D: int2_kmeans_q8 perplexity run — the fidelity-gradient
-      check. Excluded from the 05:15 DEFAULT_SWEEP for speed (~7 min
-      full-model quantize + 40 s forward); if ppl recovers substantially
-      at 9.68 dB SQNR it confirms the harness measures a real gradient
-      and bounds how far fidelity must go before perplexity discriminates.
-- [ ] Quant R&D: full ternary_lloyd_ds perplexity (n_iter=20) — missing
-      from the 05:15 sweep, which ran only the n_iter=1 1step_ds (13225
-      ppl). Given the 25x full-vs-1step gap on the symmetric twin, the
-      full dual fit is the scheme most likely to approach usable ppl.
+- [x] Quant R&D: int2_kmeans_q8 perplexity run — ANSWERED 2026-09-21
+      (`python3 -m src.quant_rnd.ppl ... --schemes int2_kmeans_q8`, g128):
+      **795.96 @ 2.375 bpw** vs fp32 53.50 (14.9x — still above the 10x
+      discrimination threshold, so not out of collapse territory, but the
+      harness measures a REAL fidelity gradient: 9.68 dB SQNR -> 795 ppl
+      is 3.5x better than the previous best (ternary_lloyd 2764). More
+      fidelity is still the right direction; OBQ-style correction next.
+- [x] Quant R&D: full ternary_lloyd_ds perplexity — ANSWERED 2026-09-21
+      (n_iter=20, g128): **2719.46 @ 1.835 bpw** — essentially TIED with
+      symmetric ternary_lloyd (2764 @ 1.710). Dual fitting buys ~nothing
+      extra in perplexity at this scale despite +0.07 dB SQNR and higher
+      bitrate; the symmetric full fit stays the ternary reference.
+      Full-vs-1step dual gap is 4.9x (13225 -> 2719), smaller than the
+      symmetric 25x gap — dual is closer to converged at n_iter=1.
+- [ ] Quant R&D: int2_kmeans_q8 perplexity at g256 (2.188 bpw) — the
+      opcount reference config; SQNR dips 9.68 -> 9.09 g128 -> g256, so
+      this checks whether the ppl gradient prefers g128 or g256 and
+      pins the fidelity anchor the OBQ work must beat.
+- [ ] Quant R&D: is the 795 ppl at 2.375 bpw limited by embeddings/LN?
+      quantize_model currently passes wte, pos embeddings, biases, LN
+      through in fp32 — run an ablation leaving them fp32 vs also
+      quantizing (separate backlog item: embedding-table quantization
+      probe covers wte specifically).
 - [ ] Quant R&D: OBQ/GPTQ-style second-order correction prototype — the
       honest next fidelity step now that pure group-wise is exhausted on
       both SQNR and perplexity. Start with per-group Hessian-diagonal
