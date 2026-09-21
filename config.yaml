@@ -13,6 +13,23 @@ agent:
 #              GPU layers. This is the engine for the 70B quest.
 backend: "ollama"
 
+# Model cascade (opt-in): set backend: "cascade" to keep a small fast model
+# resident and escalate hard queries to a big model. The big model is loaded
+# LAZILY on the first escalation, so its RAM cost only appears when needed —
+# the 70B-quest pattern (e.g. small qwen3:8b, big 35B-A3B IQ2_M via llamacpp).
+# router: "heuristic" (complexity rule on the last user message) or "verify"
+# (try small first, escalate on refusal / empty reply). "heuristic" is one
+# pass; "verify" costs two passes on escalated queries.
+#cascade:
+#  router: "heuristic"          # or "verify"
+#  heuristic_len_chars: 2000   # escalate if the last user message is longer
+#  heuristic_keyword_hits: 2   # ...or hits this many complexity keywords
+#  # small: defaults to the ollama block above; override to use llamacpp:
+#  # small: {backend: ollama, ollama: {host: http://localhost:11434, model: qwen3:4b}}
+#  big:
+#    backend: llamacpp
+#    llamacpp: {model_path: ~/.hearth/models/qwen3.5-35b-a3b-iq2_m.gguf}
+
 ollama:
   host: "http://localhost:11434"
   # Pick a model that fits comfortably in 16 GB unified memory.

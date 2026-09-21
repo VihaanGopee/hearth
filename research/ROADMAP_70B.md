@@ -416,7 +416,28 @@ measuring where quality actually breaks.
       non-speculative baseline, at matched quant; quantify the realized
       decode speedup vs the opcount ceiling ratios (decode is
       bandwidth-bound, so acceptance rate decides).
-- [ ] Model cascade: small fast model by default, escalate hard queries to the big model
+- [x] Model cascade: small fast model by default, escalate hard queries to
+      the big model — LANDED 2026-09-21 as `src/cascade.py` + opt-in
+      `backend: cascade` config (commit 6eb10d8, 236 tests green). Two
+      routers: "heuristic" (one pass; escalate if last user message >2000
+      chars or hits >=2 complexity keywords — rule is documented and
+      tunable) and "verify" (always try small first; escalate on refusal
+      phrasing or empty-with-no-tool-calls; a bare empty reply WITH tool
+      calls is a normal tool-use turn and does not escalate). Big client
+      built lazily via factory on first escalation, so the small model is
+      the only resident RAM cost until the cascade fires; no unload API
+      in v1 (restart drops the big model). Per-backend dicts take the same
+      keys as the top-level config blocks. Default `backend: ollama` +
+      `qwen3:8b` untouched; clear LLMError if no `big` spec.
+- [ ] Mac-side: cascade validation — qwen3:8b resident + 35B-A3B IQ2_M
+      (10.6 GB) via llamacpp as the big model; measure escalation rate on
+      real usage, resident-RAM before/after first escalation, and whether
+      the heuristic thresholds (≈2000 chars / 2 keyword hits) over- or
+      under-escalate (needs Justin's Mac)
+- [ ] Cascade router calibration — log (heuristic score, verify decision,
+      final route) per turn and review after a week of real use to tune
+      the keyword set and thresholds; consider a learned router only if
+      the rule-based one mis-routes measurably
 - [ ] Prototype MLX backend (mac-only; can't be tested on Linux — needs Justin's Mac)
 - [ ] Benchmark harness: quality-vs-quant curves on small models to validate the pipeline
 - [ ] Track BitNet.cpp releases + any 70B ternary model announcement

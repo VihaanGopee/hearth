@@ -1,6 +1,7 @@
 """The agent loop: chat with the local model, call tools, repeat."""
 from __future__ import annotations
 import json
+import os
 from .llm import OllamaClient, LLMError
 from .llamacpp_backend import LlamaCppClient
 from .memory import Memory
@@ -28,11 +29,73 @@ Rules:
 - When asked to remember something about the user, use the remember tool."""
 
 
+def _build_llm_client(spec: dict):
+    """Build an LLM client from a cascade model spec.
+
+    Spec shape: {"backend": "ollama"|"llamacpp", "ollama": {...},
+    "llamacpp": {...}} — the per-backend dicts take the same keys as the
+    top-level config blocks.
+    """
+    backend = spec.get("backend", "ollama")
+    if backend == "ollama":
+        oc = spec.get("ollama", {})
+        if "host" not in oc or "model" not in oc:
+            raise LLMError("cascade ollama spec needs 'host' and 'model'")
+        return OllamaClient(oc["host"], oc["model"],
+                            oc.get("temperature", 0.6),
+                            oc.get("num_ctx", 16384))
+    if backend == "llamacpp":
+        lc = spec.get("llamacpp", {})
+        return LlamaCppClient(
+            lc.get("model_path", "~/.hearth/models/model.gguf"),
+            lc.get("temperature", 0.6),
+            lc.get("num_ctx", 8192),
+            lc.get("n_gpu_layers", -1),
+            lc.get("n_threads", 0),
+            lc.get("n_batch", 512),
+            lc.get("cache_type_k", "q8_0"),
+            lc.get("cache_type_v", "q8_0"),
+            speculative=lc.get("speculative", "off"),
+            draft_model_path=lc.get("draft_model_path"),
+            draft_n_tokens=lc.get("draft_n_tokens", 10))
+    raise LLMError(f"unknown cascade model backend: {backend!r}")
+
+
+def _spec_label(spec: dict) -> str:
+    backend = spec.get("backend", "ollama")
+    if backend == "ollama":
+        return spec.get("ollama", {}).get("model", "?")
+    if backend == "llamacpp":
+        return os.path.basename(spec.get("llamacpp", {}).get("model_path", "?"))
+    return backend
+
+
 class Agent:
     def __init__(self, cfg: dict):
         self.cfg = cfg
         backend = cfg.get("backend", "ollama")
-        if backend == "llamacpp":
+        if backend == "cascade":
+            from .cascade import CascadeClient
+            cc = cfg.get("cascade", {})
+            small_spec = cc.get("small") or {
+                "backend": "ollama", "ollama": cfg["ollama"]}
+            big_spec = cc.get("big")
+            if not big_spec:
+                raise LLMError(
+                    "backend 'cascade' needs a 'big' model spec, e.g.\n"
+                    "  cascade:\n"
+                    "    big:\n"
+                    "      backend: llamacpp\n"
+                    "      llamacpp: {model_path: ~/.hearth/models/big.gguf}")
+            self.llm = CascadeClient(
+                _build_llm_client(small_spec),
+                lambda: _build_llm_client(big_spec),
+                router=cc.get("router", "heuristic"),
+                heuristic_len_chars=cc.get("heuristic_len_chars", 2000),
+                heuristic_keyword_hits=cc.get("heuristic_keyword_hits", 2))
+            self.model_label = (f"cascade:{_spec_label(small_spec)}"
+                                f"->{_spec_label(big_spec)}")
+        elif backend == "llamacpp":
             lc = cfg.get("llamacpp", {})
             self.llm = LlamaCppClient(
                 lc.get("model_path", "~/.hearth/models/model.gguf"),
