@@ -283,9 +283,13 @@ measuring where quality actually breaks.
       ternary_lloyd is now the ternary reference (beats T1+out n=2 at a
       LOWER bitrate). The ~2.19 bpw Lloyd crossover still holds: below it,
       fit the ternary codebook; at/above it, use 4-centroid Lloyd.
-- [ ] Quant R&D: adopt `ternary_lloyd` (1.710 bpw) as the ternary reference
+- [x] Quant R&D: adopt `ternary_lloyd` (1.710 bpw) as the ternary reference
       baseline-to-beat for future candidate schemes, alongside
       `int2_kmeans_q8` at group 256 (2.188 bpw) as the classical reference.
+      SUPERSEDED 2026-09-21: the fitted-ternary reference was adopted as
+      `ternary_1step` (the practical 1-iteration encoder) instead — see the
+      checked item above; and perplexity selects g128, not g256, for the
+      k-means reference (anchor 795.96 @ 2.375 bpw).
 - [x] Quant R&D: op-count model of ternary matmul (add/sub per MAC) vs
       int2 codebook-lookup + fp dequant-multiply, for the bandwidth-bound
       Apple Silicon decode regime — landed 2026-09-20 as
@@ -440,11 +444,23 @@ measuring where quality actually breaks.
       g128 1047.35 @ 2.375 (text1: 1085.61 vs 795.96 — 37% gap). g128
       wins on both texts, so the 795.96 anchor decision was not
       text-luck; the group-size verdict is text-robust.
-- [ ] Quant R&D: shuffled-block eval sample — sample N disjoint blocks
-      from a longer corpus (keeping the tokenizer + harness unchanged)
-      and report mean/std of ppl per scheme; replaces the
-      single-contiguous-block protocol whose text sensitivity the
-      text2 probe just demonstrated.
+- [ ] Quant R&D: shuffled-block eval sample — PARTIALLY LANDED
+      2026-09-21: `ppl.py --eval-texts A.txt,B.txt` now evaluates every
+      scheme on every text and reports per-text ppl + mean/std + x_fp32
+      (184 tests green; `fp32` accepted as a pseudo-scheme for a
+      same-table reference). Still open: the shuffled-block half —
+      sample N disjoint blocks from a longer corpus (needs a corpus
+      first; currently only two ~400-token hand-composed texts exist)
+      and report mean/std per scheme across blocks.
+- [x] Quant R&D: re-run the default (non-Lloyd) ternary sweep on
+      eval_text2 via `--eval-texts` — PARTIALLY ANSWERED 2026-09-21
+      (3-scheme slice: the 1.710-bpw fitted-vs-naive tiering question).
+      lloyd >> 1step >> uniform on BOTH texts at matched bitrate, so the
+      step-2b tiering is text-robust, not text-luck; the fitted-vs-1step
+      gap widens on text2 (~40x vs ~25x). Remaining schemes
+      (1step_ds, outlier, dual_scale) on text2: still open, low value
+      (all in collapse territory, directional-only per the methodology
+      item).
 - [x] Quant R&D: OBQ first slice — ANSWERED 2026-09-21, delta ~0.
       Landed as `src/quant_rnd/fisher.py` (activation capture in
       gpt2_forward.py, diag-Fisher d_j = mean_t(x_{t,j}^2) per input
