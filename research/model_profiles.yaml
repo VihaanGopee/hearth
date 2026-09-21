@@ -16,14 +16,17 @@ profiles:
   - name: qwen3:14b
     params_b: 14
     quant: Q4_K_M
-    est_gb: 8.6
+    est_gb: 9.0
     backend: ollama
     status: experimental
     notes: >
-      Rung-2 ladder candidate (14B-class at 20 tok/s). ~8.6 GB weights at
-      4.9 bpw; decode roofline on M1 Pro (~200 GB/s) ≈ 23 tok/s — tight
-      against the 20 tok/s bar, expect tuning (num_ctx, KV cache type) to
-      be needed. Recipe not yet written; measure with tools/measure_rung.py.
+      Rung-2 ladder candidate (14B-class at 20 tok/s). 14.7B params at
+      4.9 bpw = 9.0 GB weights (fitcheck arch qwen3-14b); ~9.8 GB total
+      @ 2048 ctx f16. Decode roofline on M1 Pro (~200 GB/s) ≈ 22 tok/s —
+      TIGHT against the 20 tok/s bar, expect tuning (num_ctx, KV cache
+      type) to be needed. Recipe at
+      research/recipes/RUNG2_qwen3_14b_20tps.md; measure with
+      tools/measure_rung.py.
 
   - name: llama3.3-70b-IQ1_M
     params_b: 70

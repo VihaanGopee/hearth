@@ -717,14 +717,22 @@ measuring where quality actually breaks.
       sanity checks. Tuning ladder in the recipe (Metal offload check,
       --num-ctx 2048, OLLAMA_KV_CACHE_TYPE=q8_0). Paste the script output
       back as the measurement record.
-- [ ] Rung-2 recipe: 14B-class at 20 tok/s — candidate qwen3:14b Q4_K_M
-      (~8.6 GB weights; fitcheck arch `qwen3-14b` = (40, 8, 128) already
-      in ARCHES). Write `research/recipes/RUNG2_qwen3_14b_20tps.md`
-      following the rung-1 template (expected RAM, roofline: 200/8.6 ≈
-      23 tok/s ceiling — TIGHT, tuning likely needed), extend
-      measure_rung.py only if the harness needs new knobs.
+- [x] Rung-2 recipe: 14B-class at 20 tok/s — LANDED 2026-09-21 as
+      `research/recipes/RUNG2_qwen3_14b_20tps.md` (roofline 200/9.0 ≈
+      22 tok/s — TIGHT, expect tuning), `tests/test_rung_recipes.py` pins
+      the recipe's RAM/roofline figures against fitcheck + checks every
+      recipe referenced in model_profiles.yaml exists (291 tests green).
+      qwen3:14b profile est_gb corrected 8.6 -> 9.0 (14.7B params x
+      4.9 bpw). measure_rung.py needed no new knobs (--num-ctx/--target
+      already exist).
 - [ ] Rung-2 Mac-side validation — run the rung-2 recipe on Justin's Mac;
       record measured tok/s + which tuning steps were needed.
+- [ ] Rung-2 fallback candidates (CONDITIONAL — only if rung-2 misses 20
+      tok/s at Q4_K_M after the tuning ladder): qwen3:14b at Q4_K_S
+      (~8.0 GB, ceiling ≈ 25 tok/s) / Q4_0 (~8.3 GB, ≈ 24 tok/s), or
+      IQ3_M (~6.8 GB, ceiling ≈ 29 tok/s — quality at 3.7 bpw
+      unverified); each needs the quality sanity re-run + a fitcheck
+      entry before it counts as a rung.
 - [ ] Quant R&D: vectorize the ternary Lloyd-fit encoder — currently a
       pure-Python per-group loop at ~2 Mparams/s (full-model
       ternary_1step ≈ 45 s, ternary_lloyd n_iter=20 ≈ 2 min). The
