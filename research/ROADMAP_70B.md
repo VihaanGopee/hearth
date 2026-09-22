@@ -258,14 +258,28 @@ measuring where quality actually breaks.
       its n_outliers/group bitrate, not a story change. Feeds the
       opcount-table item below: the ranking does not prefer a group
       size; the perplexity run still needs to pick 128 vs 256.
-- [ ] Quant R&D: add embedding-table (wte) quantization to the real-weight
-      probe — currently excluded by name; embedding rows have a very
-      different distribution and are the largest single tensor in small
-      models. NOTE 2026-09-21: the ppl ablation above (wte+wpe at 2-bit
-      group-wise → 1.3e14 collapse) says naive low-bit embedding
-      quantization is catastrophic — the interesting probe is now
-      higher-precision (q8/q4) or per-row-scaled embedding schemes, plus
-      the wte-vs-wpe split the ablation skipped.
+- [x] Quant R&D: add embedding-table (wte) quantization to the real-weight
+      probe — ANSWERED 2026-09-21 (commit 564b53a): the collapse is 100%
+      the wte table. `--only-names` + `int8_uniform` (q8 reference, 8.125
+      bpw @ g128) landed in ppl.py. Measured on eval_text1, g128, fp32
+      ref 53.50: wte-only @ int2_kmeans_q8 -> ppl inf (complete collapse;
+      wte is the tied lm_head, so 2-bit destroys the output projection);
+      wpe-only @ 2-bit -> 53.81 (unharmed); wte-only @ q8 -> 54.76
+      (+2.4%, survives); wpe-only @ q8 -> 53.48 (unharmed). Mac-relevant
+      rule, now measured: recipes must keep embedding/lm_head tables at
+      >= 8-bit. Supersedes the old note about naive low-bit embedding
+      probes; per-row-scaled is a refinement, not a question (see new
+      follow-up below).
+- [ ] Quant R&D: q4 / per-row-scaled embedding probe — refinement of the
+      answered wte item: is there a bitrate between 2-bit (collapse) and
+      q8 (54.76) where the tied head survives? Only worth a session if a
+      Mac recipe needs sub-8-bit embeddings (low priority).
+- [ ] Quant R&D: layer-wise mixed-precision harness — the `--only-names`
+      flag (landed 2026-09-21) gives per-tensor targeting; the remaining
+      piece for the fidelity-retrospective's sensitivity-adaptive idea is
+      a per-layer scheme selector (early/late layers at higher precision,
+      matched average bpw). One matched-bitrate experiment max before
+      re-evaluation, per the retrospective's rule. (NEW 2026-09-21)
 - [x] Quant R&D: sweep outlier_frac / n_outliers for the Pareto frontier
       (SQNR vs bpw) — landed 2026-09-20 as `src/quant_rnd/sweep.py`
       (seed 7). Frontier: ternary family below ~2.06 bpw (ternary_uniform
