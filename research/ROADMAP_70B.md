@@ -692,7 +692,12 @@ measuring where quality actually breaks.
       runtime 2.5.47 — no Smelt format-support change, so the rung-4
       recipe conditions hold; vmlx GitHub issues: no public JANG_2S
       Smelt serve report (2 closed April issues only, unrelated), so the
-      JANG_2S serve-path item stays Mac-side-unconfirmed. Re-check
+      JANG_2S serve-path item stays Mac-side-unconfirmed. SWEEP
+      2026-09-22 ~11:20 PDT: still v1.6.64 (2026-09-19), no new
+      Smelt/JANG_2S issues (last 30 scanned); oQ ecosystem healthy —
+      Jundot's DeepSeek-V4.1-Flash oQ3e-mtp at 2142 dl / oQ4e-mtp at
+      3826 dl — but still no vmlx oQ loader, so the oQ2 rung-4 path
+      stays dormant. Recipe conditions unchanged. Re-check
       periodically.)
 - [ ] Track: novamlx (cnshsliu/novamlx) — NEW 2026-09-22: pure-Swift
       Mac-native LLM server with NovaMLX-TIE, a 3-tier (wired / LRU /
@@ -743,6 +748,9 @@ measuring where quality actually breaks.
       (4/6/8-bit, mod today) and Qwen-Image-2.1-MLX-Serve; the iQ-MLX
       family tops out at Qwen3.8-27B 3.8bpw. The rung-4 candidate
       watch stands.
+      SWEEP 2026-09-22 ~11:20 PDT: still no Qwen3.6-35B-A3B-iQ-MLX
+      upload — today's uploads are MiMo-V2.6-Distill-Qwen-9B-MLX-Serve
+      (4/6/8-bit, 9B, irrelevant); watch stands.
 - [ ] Track: mlxl3 (0xZKnw/mlxl3) — NEW 2026-09-22: EXL3
       inference/conversion engine on MLX with JIT Metal kernels and
       CPU-vs-Metal conformance tests at every bit width 1-8. EXL3 is a
@@ -765,6 +773,8 @@ measuring where quality actually breaks.
       Claude-distilled variants); EXL3 70B hits are all 3.5-7.0 bpw
       (cactopus Omega-Sapphira 4.25 bpw 885 dl, mod 2026-09-05, etc.) —
       35 GB+ on disk, over budget by a wide margin. Watch stands.
+      SWEEP 2026-09-22 ~11:20 PDT: still nothing new (35B-A3B EXL3
+      hits unchanged, newest 2026-03-26).
 - [x] Quant R&D: JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S candidate — NEW
       2026-09-21 (pm sweep): prebuilt MLX JANG 2-bit for OUR rung-3
       model. Measured **11.67 GB** via HF tree API — but the model card
@@ -880,8 +890,8 @@ measuring where quality actually breaks.
       2026-09-21) — a NEW 30B-A3B MoE family with the JANGTQ2 format;
       if quality reports appear, evaluate as a 35B-A3B alternative at
       smaller size. (NEW 2026-09-21 pm sweep; STILL 0 DOWNLOADS 2026-09-22
-      ~03:50 PDT, STILL 0 DOWNLOADS as of 2026-09-22 ~04:50 PDT
-      — no quality signal yet.)
+      ~03:50 PDT, STILL 0 DOWNLOADS as of 2026-09-22 ~04:50 PDT,
+      STILL 0 as of 2026-09-22 ~11:20 PDT — no quality signal yet.)
 - [x] Quant R&D: low-active-parameter MoE survey — SURVEYED 2026-09-21
       (research/moe_survey_2026-09-21.md). Central candidate confirmed:
       Qwen3.5-35B-A3B (35B total / 3.3B active, 256 experts 8+1 shared,
@@ -1316,7 +1326,10 @@ measuring where quality actually breaks.
       oQ variants). SWEEP 2026-09-22 ~05:15 PDT: no new 35B-A3B uploads
       (JANGQ-AI latest last-modified 2026-09-08/09; Jundot's newest are
       DeepSeek-V4.1-Flash-oQ3e-mtp / oQ4e-mtp (2026-09-10/11), nothing in
-      the oQ2 class for 35B).
+      the oQ2 class for 35B). SWEEP 2026-09-22 ~11:20 PDT: still
+      nothing — newest JANGQ-AI upload is Spark-X2.5-4B-JANG_8M
+      (2026-09-09, 4B, irrelevant); latest 35B-A3B entries still
+      2026-09-08/09; no JANG_2L/JANG_2M for Qwen3.6-35B-A3B.
       (NEW 2026-09-22)
 - [ ] Mac-side: confirm the JANG_2S serve path end to end — the JANG_2S
       profile is confirmed in the vmlx source (HYBRID_JANG_PROFILES) and
