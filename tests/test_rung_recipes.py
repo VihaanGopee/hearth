@@ -179,6 +179,25 @@ class TestRung4RecipeNumbers(unittest.TestCase):
             os.path.isfile(os.path.join(RECIPES, "RUNG4_jang2s_35b_smelt.md")))
 
 
+class TestRung4RecipeSmeltFailureNote(unittest.TestCase):
+    """The RUNG4 recipe must keep the vmlx#222 Smelt failure-mode note.
+
+    This pins a Mac-side troubleshooting fact verified from the vmlx issue
+    tracker (2026-09-22): short deterministic prompts returning repeated
+    junk tokens under --smelt is the loader-norm-shift signature, not a
+    bad quant — the non-Smelt serve is the control. Without the pin, a
+    future recipe edit could silently drop it.
+    """
+
+    def test_failure_mode_note_present(self):
+        with open(os.path.join(RECIPES, "RUNG4_jang2s_35b_smelt.md")) as f:
+            text = f.read()
+        self.assertIn("vmlx#222", text)
+        self.assertIn("norm-shift", text)
+        self.assertIn("junk", text)
+        self.assertIn("non-Smelt serve", text)
+
+
 class TestRecipeConsistency(unittest.TestCase):
     """Every recipe named in model_profiles.yaml must exist on disk."""
 

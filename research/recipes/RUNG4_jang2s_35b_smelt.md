@@ -143,6 +143,16 @@ pressure with no swap is part of the pass.
    MMLU-claim expectation, re-run at `--smelt-experts 75` before
    concluding anything about the quant — the routing bias and the quant
    are two different variables.
+4. **Known Smelt failure mode — don't misread it as a bad quant:** if
+   short deterministic prompts under `--smelt` return repeated junk
+   tokens (or stop-by-length garbage) while the server started and loaded
+   cleanly, that is the exact failure signature of vmlx#222 (closed; fix
+   landed 2026-06-30): the Smelt path once skipped the internal JANG
+   norm-shift correction for Qwen/Ornith artifacts. It is fixed in
+   current vmlx, but treat it as a known regression surface: before
+   concluding anything about the model, run the plain non-Smelt serve as
+   a control. If plain serve is coherent and Smelt serve emits junk, it
+   is a loader bug, not the quant — pin the vmlx version and report it.
 
 ## If below 10 tok/s or OOM — tune in this order
 

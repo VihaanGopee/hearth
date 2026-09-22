@@ -974,7 +974,13 @@ measuring where quality actually breaks.
       comparison (both 3.5): any delta is the quant + Smelt routing bias,
       not the weights. If smelt-50 quality disappoints, re-run smelt-75
       before concluding anything about the quant (routing bias vs quant
-      are two variables). (NEW 2026-09-22 — replaces the oQ2 item)
+      are two variables). NOTE 2026-09-22 (vmlx issue scan): vmlx#222
+      (closed, fixed 2026-06-30) is the known Smelt norm-shift failure
+      mode — short deterministic prompts returning repeated junk tokens
+      under --smelt with a clean startup/load is a loader signature, not
+      a bad quant; the recipe now pins the non-Smelt control-serve step.
+      Watch vmlx release notes for Smelt loader regressions.
+      (NEW 2026-09-22 — replaces the oQ2 item)
 - [ ] Quant R&D: vmlx "Smelt" mode (partial expert loading) — NEW 2026-09-21
       from the JANG release watch: vmlx README documents `--smelt` /
       `--smelt-experts N` for MoE models that don't fit in RAM - keeps the
