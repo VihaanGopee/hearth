@@ -403,6 +403,12 @@ def parse_args(argv: list | None = None) -> argparse.Namespace:
                     help="quantize only the named linear tensor (rest "
                          "fp32); for isolating one layer's contribution, "
                          "e.g. h.0.attn.c_attn.weight")
+    ap.add_argument("--only-names", default=None, metavar="A,B",
+                    help="comma-separated tensor names: restrict "
+                         "quantization to exactly these tensors (rest "
+                         "fp32); with --quantize-embeddings this isolates "
+                         "one embedding table, e.g. --only-names "
+                         "wte.weight. Mutually exclusive with --one-layer")
     ap.add_argument("--obq", action="store_true",
                     help="quantize the --one-layer tensor with OBQ "
                          "error compensation (GPTQ-style block update, "
@@ -448,6 +454,12 @@ def check_obq_args(args: argparse.Namespace) -> None:
 
 def main() -> None:
     args = parse_args()
+    if args.one_layer and args.only_names:
+        raise SystemExit("--one-layer and --only-names are mutually "
+                         "exclusive")
+    if args.only_names and (args.obq or args.obq_all):
+        raise SystemExit("--only-names is not supported with "
+                         "--obq/--obq-all (OBQ has its own targeting)")
     tensors = read_safetensors(args.safetensors)
     mats = linear_weight_tensors(tensors)
     print(f"{len(mats)} linear matrices quantized, group size "
@@ -494,10 +506,16 @@ def main() -> None:
               f"bpw {bpw:5.3f}  ({dt:5.1f} s)")
         return
     scheme_names = [s for s in args.schemes.split(",") if s]
-    only = {args.one_layer} if args.one_layer else None
-    if only:
+    if args.one_layer:
+        only = {args.one_layer}
         print(f"one-layer mode: only {args.one_layer} quantized, "
               "rest fp32")
+    elif args.only_names:
+        only = {n for n in args.only_names.split(",") if n}
+        print(f"only-names mode: only {sorted(only)} quantized, "
+              "rest fp32")
+    else:
+        only = None
     if len(texts) == 1:
         # Original single-text protocol: output format unchanged.
         sample_weights = None

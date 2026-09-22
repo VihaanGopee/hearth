@@ -151,6 +151,25 @@ def quantize_int2_symmetric(w: np.ndarray, group_size: int = GROUP_SIZE) -> Quan
     return res
 
 
+def quantize_int8_uniform(w: np.ndarray, group_size: int = GROUP_SIZE) -> QuantResult:
+    """Symmetric uniform int8: 255 levels in [-127, 127] * absmax/127.
+
+    The q8 reference for the embedding-table probe (roadmap: is the
+    2-bit embedding collapse specific to wte, and does an 8-bit table
+    survive?). One fp16 scale per group; decode is the plain
+    multiplicative path (name is registered in neither the codebook nor
+    the dual-scale sets). Deterministic, O(n).
+    """
+    wp, n_groups, n = _groups(w, group_size)
+    amax = np.max(np.abs(wp), axis=1, keepdims=True).astype(np.float32)
+    amax = np.maximum(amax, 1e-12)  # all-zero group guard
+    s = amax / 127.0
+    codes = np.clip(np.round(wp / s), -127, 127).astype(np.int8).ravel()[:n]
+    bpw = 8.0 + _scale_overhead(1, group_size)
+    return QuantResult("int8_uniform", codes, s.reshape(n_groups, 1),
+                       bpw, group_size=group_size)
+
+
 def quantize_int2_outlier_retain(w: np.ndarray, group_size: int = GROUP_SIZE,
                                  outlier_frac: float = 0.005) -> QuantResult:
     """2-bit + top outlier_frac magnitudes kept exactly in fp16."""
@@ -547,6 +566,7 @@ SCHEMES = {
     "ternary_1step_sp": partial(quantize_ternary_1step, thresh_factor=1.2),
     "ternary_1step_ds": quantize_ternary_1step_ds,
     "int2_symmetric": quantize_int2_symmetric,
+    "int8_uniform": quantize_int8_uniform,
     "int2_kmeans": quantize_int2_kmeans,
     "int2_kmeans_q8": quantize_int2_kmeans_q8,
     "int2_outlier_retain": quantize_int2_outlier_retain,

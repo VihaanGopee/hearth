@@ -18,6 +18,7 @@ from src.quant_rnd import (
     quantize_int2_kmeans,
     quantize_int2_kmeans_q8,
     quantize_int2_symmetric,
+    quantize_int8_uniform,
     quantize_ternary_lloyd,
     quantize_ternary_lloyd_ds,
     quantize_ternary_1step,
@@ -74,7 +75,7 @@ class TestSchemes(unittest.TestCase):
                          {"ternary_uniform", "ternary_lloyd", "ternary_lloyd_ds",
                           "ternary_1step", "ternary_1step_sp",
                           "ternary_1step_ds",
-                          "int2_symmetric", "int2_kmeans",
+                          "int2_symmetric", "int8_uniform", "int2_kmeans",
                           "int2_kmeans_q8",
                           "int2_outlier_retain", "dual_scale_ternary",
                           "ternary_outlier"})
@@ -86,6 +87,40 @@ class TestSchemes(unittest.TestCase):
     def test_int2_codes_valid(self):
         q = quantize_int2_symmetric(self.w)
         self.assertTrue(set(np.unique(q.codes)) <= {-3, -1, 1, 3})
+
+    def test_int8_codes_valid(self):
+        q = quantize_int8_uniform(self.w)
+        self.assertEqual(q.codes.dtype, np.int8)
+        self.assertTrue(np.all(q.codes >= -127))
+        self.assertTrue(np.all(q.codes <= 127))
+
+    def test_int8_bpw_accounting(self):
+        # 8-bit payload + one fp16 scale per group; overhead halves
+        # when the group size doubles.
+        q = quantize_int8_uniform(self.w)
+        self.assertAlmostEqual(q.bpw, 8.0 + 16 / 128, places=6)
+        q64 = quantize_int8_uniform(self.w, group_size=64)
+        self.assertAlmostEqual(q64.bpw, 8.0 + 16 / 64, places=6)
+
+    def test_int8_multiplicative_decode(self):
+        # int8_uniform is neither a codebook nor a dual-scale scheme:
+        # decode is the plain codes * scale path, pinned against a
+        # manual recomputation so a mis-registration can't silently
+        # re-decode through the wrong branch.
+        q = quantize_int8_uniform(self.w)
+        n = self.w.shape[0]
+        group_id = np.arange(n) // 128
+        manual = q.codes.astype(np.float32) * q.scales[group_id, 0]
+        np.testing.assert_array_equal(q.reconstruct(), manual)
+
+    def test_int8_deterministic_and_near_lossless(self):
+        q1 = quantize_int8_uniform(self.w)
+        q2 = quantize_int8_uniform(self.w)
+        np.testing.assert_array_equal(q1.codes, q2.codes)
+        rel = np.linalg.norm(q1.reconstruct() - self.w) / np.linalg.norm(self.w)
+        # q8 on synthetic weights is near-lossless; if this ever fails
+        # the encoder changed, not the tolerance.
+        self.assertLess(rel, 0.02)
 
     def test_roundtrip_shape_finite(self):
         for name, fn in SCHEMES.items():
@@ -305,7 +340,9 @@ class TestBench(unittest.TestCase):
         for r in res:
             self.assertTrue(math.isfinite(r["sqnr_db"]))
             self.assertGreater(r["bpw"], 1.0)
-            self.assertLess(r["bpw"], 3.0)
+            # Family spans the sub-2-bit candidates up to the int8_uniform
+            # q8 ceiling reference (8.125 bpw @ g128).
+            self.assertLess(r["bpw"], 9.0)
 
     def test_sqnr_perfect_reconstruction(self):
         w = np.array([1.0, -2.0, 0.5], dtype=np.float32)
@@ -1571,6 +1608,7 @@ from src.quant_rnd.ppl import (
     eval_text_paths,
     is_embedding,
     parse_args as ppl_parse_args,
+    main as ppl_main,
     perplexity_of,
     quantize_model,
     quantize_model_obq,
@@ -1742,6 +1780,63 @@ class TestQuantizeModel(unittest.TestCase):
         self.assertFalse(args.quantize_embeddings)
         args = ppl_parse_args(["m.safetensors", "--quantize-embeddings"])
         self.assertTrue(args.quantize_embeddings)
+
+    def test_cli_only_names_flag(self):
+        args = ppl_parse_args(["m.safetensors"])
+        self.assertIsNone(args.only_names)
+        args = ppl_parse_args(["m.safetensors", "--only-names",
+                               "wte.weight,wpe.weight"])
+        self.assertEqual(args.only_names, "wte.weight,wpe.weight")
+
+    def test_one_layer_and_only_names_mutually_exclusive(self):
+        # The mutual-exclusion check runs before any model loading, so
+        # a bogus model path never gets touched.
+        import sys
+        old = sys.argv
+        sys.argv = ["ppl", "nope.safetensors", "--one-layer", "a.weight",
+                    "--only-names", "b.weight"]
+        try:
+            with self.assertRaises(SystemExit):
+                ppl_main()
+        finally:
+            sys.argv = old
+
+    def test_only_names_rejected_with_obq(self):
+        import sys
+        old = sys.argv
+        sys.argv = ["ppl", "nope.safetensors", "--obq-all",
+                    "--only-names", "wte.weight"]
+        try:
+            with self.assertRaises(SystemExit):
+                ppl_main()
+        finally:
+            sys.argv = old
+
+    def test_only_names_splits_embedding_ablation(self):
+        # --only-names + --quantize-embeddings isolates a single table:
+        # the wte-vs-wpe split for the embedding-collapse ablation.
+        rng = np.random.default_rng(7)
+        fake = self._fake_dict()
+        fake["wpe.weight"] = rng.standard_normal((8, 64)).astype(np.float32)
+        out, _ = quantize_model(fake, "int2_symmetric", group_size=32,
+                                quantize_embeddings=True,
+                                only_names={"wte.weight"})
+        self.assertFalse(np.allclose(out["wte.weight"], fake["wte.weight"]),
+                         "wte must be quantized when targeted")
+        np.testing.assert_array_equal(out["wpe.weight"], fake["wpe.weight"])
+        np.testing.assert_array_equal(out["h.0.mlp.c_fc.weight"],
+                                      fake["h.0.mlp.c_fc.weight"])
+        out2, _ = quantize_model(fake, "int2_symmetric", group_size=32,
+                                 quantize_embeddings=True,
+                                 only_names={"wpe.weight"})
+        self.assertFalse(np.allclose(out2["wpe.weight"], fake["wpe.weight"]),
+                         "wpe must be quantized when targeted")
+        np.testing.assert_array_equal(out2["wte.weight"], fake["wte.weight"])
+
+    def test_only_names_unknown_tensor_raises(self):
+        with self.assertRaises(KeyError):
+            quantize_model(self._fake_dict(), "int2_symmetric",
+                           only_names={"nope.weight"})
 
     @staticmethod
     def _fake_capture():
