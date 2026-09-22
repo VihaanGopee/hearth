@@ -487,12 +487,24 @@ measuring where quality actually breaks.
       is NOT the `mlx` backend (mlx-lm cannot load oQ2's affine format)
       and NOT a cascade big model yet — both need the OpenAI-compatible
       transport item below; the recipe documents that explicitly.
-- [ ] Hearth: OpenAI-compatible HTTP backend (vmlx / mlx_lm.server
-      transport) — NEW 2026-09-21, unblocks the rung-4 recipe's Hearth
-      wiring (cascade big = vmlx-served oQ2-smelt) AND the MLX
-      tool-calling follow-up (mlx_lm.server instead of the text-based
-      fallback). `vmlx serve` is OpenAI-compatible; Hearth currently has
-      no such backend.
+- [x] Hearth: OpenAI-compatible HTTP backend (vmlx / mlx_lm.server
+      transport) — LANDED 2026-09-21 as `src/openai_backend.py` +
+      `backend: openai` wiring (353 tests green, incl. 19 new against a
+      stub HTTP server). `OpenAICompatClient`: provider-neutral
+      /v1/chat/completions, OpenAI-native tool_calls passthrough, optional
+      api_key (or OPENAI_API_KEY env), base_url normalization (root / /v1
+      / full path). Wired into Agent + cascade big-spec + config.yaml
+      commented example; RUNG4 recipe's wiring note updated to point at
+      it. Unblocks the rung-4 recipe's Hearth wiring (cascade big =
+      vmlx-served oQ2-smelt) AND the MLX tool-calling follow-up
+      (mlx_lm.server transport). Still Mac-side: the transport itself is
+      untested against a real server (see new item below).
+- [ ] Mac-side: OpenAI-backend transport validation — against `vmlx serve`
+      (with the Jundot oQ2 model) and `mlx_lm.server`: confirm chat
+      works, measure whether the server's tool_calls actually fire on
+      real agent turns (mlx_lm.server tool support is the specific
+      unknown), then wire the cascade big = vmlx-smelt config for the
+      rung-4 validation item (NEW 2026-09-21; transport is untested-on-Mac).
 - [ ] tools/measure_openai.py — generalize the rung harness to
       OpenAI-compatible endpoints (vmlx, mlx_lm.server): same 3 speed
       prompts + 3 sanity checks + streamed-token timing, so rungs 4+ are

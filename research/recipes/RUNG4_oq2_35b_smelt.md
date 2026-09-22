@@ -148,12 +148,14 @@ Hearth has no transport for this yet, deliberately:
 
 - `backend: mlx` (mlx-lm) **cannot** load oQ2's affine 2-bit MLX format —
   do not try; the load will fail on the quant layout.
-- vmlx serves OpenAI-compatible HTTP, and Hearth has no
-  OpenAI-compatible backend. The wiring work is a new backlog item
-  (it also unblocks the `mlx_lm.server` transport for the MLX
-  tool-calling follow-up): when it lands, the cascade big-model becomes
-  `backend: openai-compat` → vmlx-served oQ2-smelt, with qwen3:8b
-  resident as the small model.
+- vmlx serves OpenAI-compatible HTTP; Hearth speaks it via
+  `backend: openai` (src/openai_backend.py, landed 2026-09-21 —
+  Mac-side transport still untested). When vmlx is serving, the
+  cascade big-model becomes `backend: openai` + `openai: {base_url:
+  http://localhost:8000, model: Jundot/Qwen3.6-35B-A3B-oQ2}` with
+  qwen3:8b resident as the small model (see the commented example in
+  config.yaml). This also unblocks the `mlx_lm.server` transport for
+  the MLX tool-calling follow-up.
 
 ## What a validated rung 4 unlocks
 

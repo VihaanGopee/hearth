@@ -72,6 +72,21 @@ mlx:
   # seed: 42            # optional, for reproducible runs
   # adapter_path: "~/.hearth/adapters/lora"  # optional LoRA adapter
 
+# OpenAI-compatible HTTP servers (untested-on-Mac transport): set
+# backend: "openai" and point at `vmlx serve` (the rung-4 oQ2-smelt
+# recipe) or `mlx_lm.server` (the MLX tool-calling transport follow-up).
+# openai:
+#   base_url: "http://localhost:8000"  # vmlx serve default port
+#   model: "Jundot/Qwen3.6-35B-A3B-oQ2"
+#   temperature: 0.6
+#   # max_tokens: 1024    # optional per-reply cap
+#   # api_key: ...        # optional; or set OPENAI_API_KEY in the env
+# Also usable as a cascade big model:
+# cascade:
+#   big:
+#     backend: openai
+#     openai: {base_url: "http://localhost:8000", model: "Jundot/Qwen3.6-35B-A3B-oQ2"}
+
 memory:
   total_ram_gb: 16   # machine RAM
   reserved_gb: 5     # keep for macOS + other apps; the rest is the model budget

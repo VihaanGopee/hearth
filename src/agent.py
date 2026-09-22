@@ -5,6 +5,7 @@ import os
 from .llm import OllamaClient, LLMError
 from .llamacpp_backend import LlamaCppClient
 from .mlx_backend import MlxClient
+from .openai_backend import OpenAICompatClient
 from .memory import Memory
 from .tools import load_all
 from .tools import registry
@@ -33,9 +34,9 @@ Rules:
 def _build_llm_client(spec: dict):
     """Build an LLM client from a cascade model spec.
 
-    Spec shape: {"backend": "ollama"|"llamacpp"|"mlx", "ollama": {...},
-    "llamacpp": {...}, "mlx": {...}} — the per-backend dicts take the same
-    keys as the top-level config blocks.
+    Spec shape: {"backend": "ollama"|"llamacpp"|"mlx"|"openai", "ollama": {...},
+    "llamacpp": {...}, "mlx": {...}, "openai": {...}} — the per-backend dicts
+    take the same keys as the top-level config blocks.
     """
     backend = spec.get("backend", "ollama")
     if backend == "ollama":
@@ -69,6 +70,15 @@ def _build_llm_client(spec: dict):
             mc.get("repetition_penalty", 1.0),
             mc.get("seed"),
             mc.get("adapter_path"))
+    if backend == "openai":
+        oc = spec.get("openai", {})
+        if "base_url" not in oc or "model" not in oc:
+            raise LLMError("cascade openai spec needs 'base_url' and 'model'")
+        return OpenAICompatClient(
+            oc["base_url"], oc["model"],
+            oc.get("temperature", 0.6),
+            oc.get("max_tokens"),
+            oc.get("api_key"))
     raise LLMError(f"unknown cascade model backend: {backend!r}")
 
 
@@ -81,6 +91,8 @@ def _spec_label(spec: dict) -> str:
     if backend == "mlx":
         ref = spec.get("mlx", {}).get("model", "?")
         return ref.rstrip("/").split("/")[-1]
+    if backend == "openai":
+        return spec.get("openai", {}).get("model", "?")
     return backend
 
 
@@ -137,6 +149,20 @@ class Agent:
             ref = mc.get("model",
                          "mlx-community/Mistral-7B-Instruct-v0.3-4bit")
             self.model_label = f"mlx:{ref.rstrip('/').split('/')[-1]}"
+        elif backend == "openai":
+            oc = cfg.get("openai", {})
+            if "base_url" not in oc or "model" not in oc:
+                raise LLMError(
+                    "backend 'openai' needs base_url and model, e.g.\n"
+                    "  openai:\n"
+                    "    base_url: http://localhost:8000  # vmlx serve\n"
+                    "    model: Jundot/Qwen3.6-35B-A3B-oQ2")
+            self.llm = OpenAICompatClient(
+                oc["base_url"], oc["model"],
+                oc.get("temperature", 0.6),
+                oc.get("max_tokens"),
+                oc.get("api_key"))
+            self.model_label = f"openai:{oc['model']}"
         else:
             oc = cfg["ollama"]
             self.llm = OllamaClient(
