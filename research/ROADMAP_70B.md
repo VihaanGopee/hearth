@@ -274,12 +274,32 @@ measuring where quality actually breaks.
       answered wte item: is there a bitrate between 2-bit (collapse) and
       q8 (54.76) where the tied head survives? Only worth a session if a
       Mac recipe needs sub-8-bit embeddings (low priority).
-- [ ] Quant R&D: layer-wise mixed-precision harness — the `--only-names`
-      flag (landed 2026-09-21) gives per-tensor targeting; the remaining
-      piece for the fidelity-retrospective's sensitivity-adaptive idea is
-      a per-layer scheme selector (early/late layers at higher precision,
-      matched average bpw). One matched-bitrate experiment max before
-      re-evaluation, per the retrospective's rule. (NEW 2026-09-21)
+- [x] Quant R&D: layer-wise mixed-precision harness — LANDED 2026-09-21
+      as `ppl.py --per-layer-schemes SPEC` (explicit per-block assignment,
+      e.g. "0-5:int8_uniform,6-11:ternary_1step") and
+      `--sensitive-layers K --sensitive-scheme S --base-scheme B` (top-K
+      Fisher-trace blocks at S, rest at B), `fisher.layer_fisher_trace`
+      (per-block diag-Fisher trace on the eval text — the same
+      calibration-on-eval caveat as --fisher), `quantize_model_per_layer`
+      with PARAMETER-WEIGHTED average bpw (the matched-bitrate
+      denominator), strict coverage rules (every block assigned exactly
+      once; KeyError on gaps) so no block is silently fp32. 16 new tests
+      (incl. a gated trace test on the real checkpoint), 404 green.
+      Per the fidelity-retrospective's one-experiment rule the matched
+      experiment is DONE and it is a NEGATIVE (see that item).
+- [ ] Quant R&D: per-tensor (not per-block) sensitivity granularity —
+      the block-level harness can't hit arbitrary target bitrates exactly
+      (12 coarse blocks: K=1 int8 + rest ternary_1step_ds lands 2.359 vs
+      the 2.375 anchor). A per-tensor top-K selector would allow exact
+      bitrate matching and test whether the negative is granularity, not
+      principle. Low priority given the verdict below. (NEW 2026-09-21)
+- [ ] Quant R&D: measure activation drift under quantization — the
+      sensitivity experiment's leading explanation is that the fp32
+      Fisher ranking is invalidated once other blocks are quantized.
+      Testable: compare the fp32-activation Fisher ranking against the
+      ranking recomputed on activations from a partially-quantized model,
+      or against leave-one-block-quantized ppl deltas. Would turn the
+      negative into a mechanism. (NEW 2026-09-21)
 - [x] Quant R&D: sweep outlier_frac / n_outliers for the Pareto frontier
       (SQNR vs bpw) — landed 2026-09-20 as `src/quant_rnd/sweep.py`
       (seed 7). Frontier: ternary family below ~2.06 bpw (ternary_uniform
@@ -818,14 +838,31 @@ measuring where quality actually breaks.
       checkpointing protocol worked as designed: 12 + 24 + 12 layers
       across three sessions, bit-identical assembly, survived a
       background restart.
-- [ ] Quant R&D: fidelity-ladder retrospective — naive -> Lloyd k-means
-      -> Fisher reweighting -> full OBQ all collapsed at ~2.4 bpw
-      (475 best), so the next fidelity ideas must be STRUCTURALLY
-      different to be worth a session: e.g. sensitivity-adaptive bit
-      allocation across layers (early/late layers at higher precision)
-      at matched average bpw, or per-layer mixed schemes with the bpw
-      budget reallocated by Fisher-trace sensitivity. Any such idea
-      gets one matched-bitrate experiment max before re-evaluation.
+- [x] Quant R&D: fidelity-ladder retrospective — CLOSED NEGATIVE
+      2026-09-21. The structurally-different idea (sensitivity-adaptive
+      bit allocation across layers at matched average bpw) got its one
+      experiment via the landed per-layer harness, and it LOSES.
+      Matched-bitrate result (eval_text1, g128): the single most
+      Fisher-sensitive block (block 11, trace 767860 — late blocks
+      dominate, blocks 0/1 least sensitive) at int8_uniform, the other
+      11 at ternary_1step_ds -> **2008.36 @ 2.359 bpw vs the naive
+      int2_kmeans_q8 anchor 795.96 @ 2.375** — 2.5x worse at matched
+      bitrate (0.7% fewer bits, so the loss is conservative). Second
+      datapoint: top-5 sensitive blocks at int8 + rest ternary_1step ->
+      4070.67 @ 4.383 bpw, WORSE than uniform ternary_1step (2764 @
+      1.710) at 2.56x the bits. Honest mechanism: the Fisher trace is
+      measured on fp32 activations, but once the unprotected blocks go
+      ternary the activation distribution shifts and the fp32 ranking
+      no longer describes where the error hurts — uniform Lloyd at
+      2.375 bpw is simply a better use of bits than ternary-anywhere +
+      int8 islands. Caveats: calibrated on the eval text (no held-out
+      corpus); GPT-2 124M scale; collapse territory so ordering is
+      directional per the methodology item — but both gaps are 2.5x+,
+      far outside noise. No further fidelity iteration at this bitrate
+      is planned; the follow-ups (per-tensor granularity, activation
+      drift measurement) are logged above as low-priority mechanism
+      work. The quant-R&D story rests on the compute side and on
+      bigger models / Mac-side validation, as before.
 - [x] Quant R&D: unblock the full-model OBQ measurement — PARTIALLY
       LANDED 2026-09-21 as `src/quant_rnd/obq_ckpt.py` + `ppl.py
       --obq-all --obq-ckpt-dir DIR [--obq-max-layers N]` (commit
