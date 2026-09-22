@@ -653,6 +653,10 @@ measuring where quality actually breaks.
       microsoft/BitNet's largest public model remains BitNet-b1.58-2B-4T
       (2.4B, 4T tokens); the supported-model ceiling is still ~2-8B ternary.
       Avenue-A trigger not hit. Re-check periodically.)
+      SWEEP 2026-09-22 ~04:50 PDT: still nothing new — the microsoft HF
+      org's largest remains bitnet-b1.58-2B-4T (2.4B, 4T tokens,
+      mod 2025-12-17); other entries are VibeVoice-ASR-BitNet and the
+      sub-1B embeddings. Avenue-A trigger not hit.
 - [ ] Track oQ/JANG releases and 2-bit MoE quality reports (SWEEP
       2026-09-21 pm: vmlx README (updated ~2026-09-17) adds an explicit
       JANG profile table, Smelt benchmarks unchanged, and a new
@@ -716,6 +720,11 @@ measuring where quality actually breaks.
       own iQ-MLX family (imatrix-calibrated mixed-width MLX, e.g.
       Qwen3.8-27B 3.8bpw 13.0 GB text-only) — a Qwen3.6-35B-A3B-iQ-MLX
       upload would be a native mlx-serve rung-4 candidate. (NEW 2026-09-22)
+      SWEEP 2026-09-22 ~04:50 PDT: still no Qwen3.6-35B-A3B-iQ-MLX
+      upload — ddalcu's latest are MiMo-V2.6-Distill-Qwen-9B-MLX-Serve
+      (4/6/8-bit, mod today) and Qwen-Image-2.1-MLX-Serve; the iQ-MLX
+      family tops out at Qwen3.8-27B 3.8bpw. The rung-4 candidate
+      watch stands.
 - [ ] Track: mlxl3 (0xZKnw/mlxl3) — NEW 2026-09-22: EXL3
       inference/conversion engine on MLX with JIT Metal kernels and
       CPU-vs-Metal conformance tests at every bit width 1-8. EXL3 is a
@@ -732,6 +741,12 @@ measuring where quality actually breaks.
       hybrid), not the 35B-A3B MoE; at 2.00 bpw a 27B is ~6.75 GB, which
       fits — a 35B-A3B EXL3 ~2bpw upload would be ~9 GB and inside the
       budget. Watch item stands, transport question added. (NEW 2026-09-22)
+      SWEEP 2026-09-22 ~04:50 PDT: still no sub-2-bit EXL3 35B-A3B or
+      70B upload. EXL3 35B-A3B hits are all 2026-03 or older
+      (turboderp/Qwen3.5-35B-A3B-exl3, 355 dl; two 4.05-4.09 bpw
+      Claude-distilled variants); EXL3 70B hits are all 3.5-7.0 bpw
+      (cactopus Omega-Sapphira 4.25 bpw 885 dl, mod 2026-09-05, etc.) —
+      35 GB+ on disk, over budget by a wide margin. Watch stands.
 - [x] Quant R&D: JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S candidate — NEW
       2026-09-21 (pm sweep): prebuilt MLX JANG 2-bit for OUR rung-3
       model. Measured **11.67 GB** via HF tree API — but the model card
@@ -847,7 +862,8 @@ measuring where quality actually breaks.
       2026-09-21) — a NEW 30B-A3B MoE family with the JANGTQ2 format;
       if quality reports appear, evaluate as a 35B-A3B alternative at
       smaller size. (NEW 2026-09-21 pm sweep; STILL 0 DOWNLOADS 2026-09-22
-      ~03:50 PDT — no quality signal yet.)
+      ~03:50 PDT, STILL 0 DOWNLOADS as of 2026-09-22 ~04:50 PDT
+      — no quality signal yet.)
 - [x] Quant R&D: low-active-parameter MoE survey — SURVEYED 2026-09-21
       (research/moe_survey_2026-09-21.md). Central candidate confirmed:
       Qwen3.5-35B-A3B (35B total / 3.3B active, 256 experts 8+1 shared,
