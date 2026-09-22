@@ -131,5 +131,22 @@ class TestSelectItems(unittest.TestCase):
             eval_battery.select_items("halluc-accord,nope-not-real")
 
 
+class TestExtractResponse(unittest.TestCase):
+    def test_returns_response_text(self):
+        payload = {"model": "m", "response": "hello", "done": True}
+        self.assertEqual(eval_battery.extract_response(payload), "hello")
+
+    def test_api_error_surfaces_loudly(self):
+        # an Ollama-level error must never silently become an empty answer
+        payload = {"error": "model requires more system memory"}
+        with self.assertRaises(eval_battery.BatteryError) as ctx:
+            eval_battery.extract_response(payload)
+        self.assertIn("model requires more system memory", str(ctx.exception))
+
+    def test_non_dict_raises(self):
+        with self.assertRaises(eval_battery.BatteryError):
+            eval_battery.extract_response(["not", "a", "dict"])
+
+
 if __name__ == "__main__":
     unittest.main()

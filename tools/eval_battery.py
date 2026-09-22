@@ -221,6 +221,20 @@ class BatteryError(Exception):
     pass
 
 
+def extract_response(payload):
+    """Pull the text out of an /api/generate payload.
+
+    API-level errors (e.g. model failed to load, template errors) must
+    surface loudly — never silently become an empty answer that the
+    checkers then score as a model failure.
+    """
+    if not isinstance(payload, dict):
+        raise BatteryError("unexpected Ollama response shape: %r" % (payload,))
+    if payload.get("error"):
+        raise BatteryError("Ollama error: %s" % payload["error"])
+    return payload.get("response", "")
+
+
 def generate(base_url, model, prompt, num_predict=512, num_ctx=4096,
              timeout=300):
     body = {
@@ -251,9 +265,7 @@ def generate(base_url, model, prompt, num_predict=512, num_ctx=4096,
             % (base_url, e.reason if hasattr(e, "reason") else e))
     except (ValueError, UnicodeDecodeError) as e:
         raise BatteryError("bad JSON from Ollama: %s" % e)
-    if not isinstance(payload, dict):
-        raise BatteryError("unexpected Ollama response shape: %r" % (payload,))
-    return payload.get("response", "")
+    return extract_response(payload)
 
 
 def ollama_stop(model):
