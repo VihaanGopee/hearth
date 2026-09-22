@@ -759,6 +759,42 @@ measuring where quality actually breaks.
       text-only) → Smelt. Mac-side: quality battery vs oQ2 (rung-4's
       current pick); compare the TurboQuant codebook claim ("better
       quality AND faster decode than affine 2-bit at the same budget")
+      PROBE 2026-09-22 (am, safetensors-header probe via HTTP Range only,
+      zero weight bytes downloaded — same method as the JANG_2S probe):
+      on-disk **11.63 GB** = 10.74 GB text (1597 tensors) + 0.89 GB
+      vision (333 tensors, fp16 ViT) — matches the card's stated 11.63 GB
+      exactly (this card is honest about size, unlike the JANG_2S 9.0 GB
+      claim). Composition: **10.48 GB U32 packed** (`.tq_packed` expert
+      indices + MLX 8-bit-affine packed weights) + **1.15 GB F16**
+      (`.tq_norms`, router/norms/vision passthrough) — TurboQuant's
+      codebook+norm metadata is much leaner than JANG_2S's 2.01 GB F16
+      scale volume. Naming RESOLVED: `OsaurusAI/Qwen3.6-35B-A3B-JANGTQ2`
+      (the id in the card's usage snippet) is not publicly reachable
+      (HTTP 401); the pinned public id is
+      `JANGQ-AI/Qwen3.6-35B-A3B-JANGTQ`. Loader corrected from the card:
+      `jang_tools.load_jangtq.load_jangtq_model` (pip install from the
+      jang-tools dir of github.com/jjang-ai/jangq) — differs from the
+      JANG_2S card's `jang_tools.loader.load_jang_model`. Budget verdict
+      TIGHTENED by the card itself: "expect ~12–14 GB resident after
+      load, plus KV cache", and its hardware table lists 24/32 GB rows
+      only — NO 16 GB row. 10.74 GB text-only + ~1 GB runtime + KV >
+      ~11 GB usable → fully resident is a NO even vision-stripped;
+      needs Smelt (whether vmlx parses the mxtq/TurboQuant layout is
+      UNVERIFIED — vmlx documents JANG profiles, not mxtq) or the
+      jang_tools loader with the vision tower dropped. Quality gap: the
+      card carries NO measured quant quality — its benchmark table is
+      base-model fp16 references only (MMLU-Pro 85.2 etc.), "independent
+      JANGTQ-quant evaluation ... will land in future README revisions";
+      the "better quality AND faster decode than affine 2-bit" claim is
+      author-stated, unmeasured. Our battery (vs oQ2 / IQ2_XXS) is the
+      arbiter. The rung-3-fallback budget picture is now complete to the
+      same granularity as JANG_2S.
+- [ ] Mac-side: verify whether vmlx parses the JANGTQ mxtq/TurboQuant
+      layout — JANGTQ's only sub-16GB path is Smelt or the jang_tools
+      loader, and vmlx documents JANG profiles (JANG_2M/2L/3M/4M/6M),
+      not mxtq. If vmlx can't serve it, the fallback ladder for JANGTQ
+      is jang_tools-only (no Smelt paging). Check before any JANGTQ
+      validation attempt. (NEW 2026-09-22)
       against our own opcount/SQNR numbers. NOTE 2026-09-22: the vmlx
       org also ships jjang-ai/mlxstudio, a Mac app with first-class
       JANG-format support (per its README) — a GUI alternative to the
