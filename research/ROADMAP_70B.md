@@ -860,6 +860,33 @@ measuring where quality actually breaks.
       19-prompt battery vs JANG_2S smelt-50 (note: 3.6 base vs rung-3's
       3.5 base, so not same-base; a Qwen3.5-35B-A3B 2bpw EXL3 upload
       would enable the apples-to-apples comparison).
+      SWEEP 2026-09-22 ~14:45 PDT: mlxl3 moved FAST — now **v1.1.1**
+      (was v1.0.2 at this morning's doc check; same-day bump). Engine
+      status changed materially: **Qwen3.6-35B-A3B EXL3 2.49 bpw is now
+      TESTED on Apple Silicon** (docs/v1-validation.md: text generation
+      + multi-turn + Qwen structured-parser fixtures), README headline:
+      **47.545 tok/s median decode** (greedy, 48 tokens, M5) and 0.153 s
+      prefill; experimental DFlash2 speculative path (draft files from
+      incoai/Qwen3.6-35B-A3B-Splash, ~457 MiB) hits 74.645 tok/s on the
+      same target, greedy-only, opt-in. MoE kernels are now "working
+      correctness-first path" (kernel-port.md); qwen3_5_moe config type
+      covers dense and MoE text chat. BUT the transport gap STANDS:
+      interfaces are the SwiftUI Desktop app (chat + MCP + HF catalogue
+      downloads), the streaming `mlxl3` CLI (`mlxl3 run` is interactive
+      chat, `mlxl3 hub download` pulls EXL3 repos) — **no documented
+      HTTP/OpenAI server surface**, so Hearth still has no transport to
+      it. Two more Mac-side caveats for the eventual test: (1) dev +
+      perf validation happen on M5 — M1-M4 "use compatible Metal paths
+      where M5 TensorOps are unavailable" but have NO physical
+      performance campaign, so Justin's M1 Pro numbers are unmeasured
+      (the 47.5 tok/s is M5-only); (2) release build still requires
+      macOS 26.2+ — confirm his OS version before any install. The
+      EXL3 rung-4-candidate thesis is now engine-validated; the only
+      blockers are server mode (or a CLI-subprocess bridge) and M1
+      perf. HF check: no new 35B-A3B EXL3 uploads today (yeasah
+      2026-09-21 still the freshest 2-bpw-class; MilesQLi 2026-09-02
+      exists but is not the 2.49bpw test file; darkbit1001 ships
+      DFlash-EXL3 variants 4.50/6.00bpw).
 - [x] Quant R&D: JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S candidate — NEW
       2026-09-21 (pm sweep): prebuilt MLX JANG 2-bit for OUR rung-3
       model. Measured **11.67 GB** via HF tree API — but the model card
