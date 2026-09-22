@@ -146,9 +146,11 @@ reach — record whatever the harness prints, honestly.
      survey — verify the exact filename on HF before downloading): ships
      a native MTP speculative head; pair with Hearth's llamacpp backend
      `speculative: prompt_lookup` (config below).
-   - oQ2 MLX (~12.6 GB, the benchmarked-quality ~2-bit option at 64%
-     MMLU) via `vmlx --smelt 50` (see the backlog's Smelt item): the
-     flash-paged path if nothing fits fully resident.
+   - oQ2 MLX (**13.1 GB measured** 2026-09-21 via the HF tree API —
+     repo `Jundot/Qwen3.6-35B-A3B-oQ2`, oMLX v0.3.7 2-bit group 64; the
+     benchmarked-quality ~2-bit option at 64% MMLU) via `vmlx --smelt 50`
+     (see the backlog's Smelt item): the flash-paged path if nothing fits
+     fully resident.
 6. **If nothing is both resident and ≥ 10 tok/s:** that is a result, not a
    failure. Log the best measured number, which files were tried, and
    where RAM vs speed bit. Rung 3 then waits on the oQ2/Smelt path or a
@@ -199,5 +201,5 @@ resident in 16 GB at interactive speed, with decode cost set by active
 params. The next measurement is then **quality-per-GB** — IQ2_XXS vs dense
 qwen3:8b on a real task battery (MMLU subset), because speed without
 quality doesn't climb the ladder. Past rung 3, the climb goes through
-bigger MoE / better quants (oQ2-class MLX, Smelt-paged 12 GB models), not
+bigger MoE / better quants (oQ2-class MLX, Smelt-paged ~13 GB models), not
 through denser models.

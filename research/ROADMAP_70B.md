@@ -514,13 +514,26 @@ measuring where quality actually breaks.
       the MTP variant). 8 new tests, recipe-consistency tests pin the
       RAM/roofline figures. The Mac-side validation item above is the
       remaining half.
-- [ ] Re-check HF for a prebuilt oQ2/oQ2.5 35B-A3B MLX upload (Jundot org);
-      if one appears at ~12.6 GB, re-evaluate vs IQ2_M on quality-per-GB
-- [ ] Data hygiene: `research/model_profiles.yaml` lists
-      qwen3.5-35b-a3b-oQ-2bit at est_gb 8.8, but the 2026-09-21 MoE survey
-      puts oQ2 MLX at ~12.6 GB. Re-measure the oQ2 size from HF (or the
-      oMLX docs) and correct the profile — the rung-3 file-size
-      misattribution above shows these numbers drift.
+- [x] Re-check HF for a prebuilt oQ2/oQ2.5 35B-A3B MLX upload (Jundot org) —
+      ANSWERED 2026-09-21: `Jundot/Qwen3.6-35B-A3B-oQ2` EXISTS (uploaded
+      2026-04-23, oMLX v0.3.7, 2-bit group 64, MLX safetensors) and
+      measures **13.10 GB** via the HF tree API (3 shards: 5.03 + 5.03 +
+      3.02 GB). Slightly above the ~12.6 GB survey estimate (est. was for
+      3.5; this is the 3.6 variant, ~3.03 eff. bpw). Quality-per-GB
+      re-evaluation: at 64% MMLU it is the best-benchmarked ~2-bit option,
+      but 13.1 GB cannot fit fully resident — the fit story is Smelt
+      paging, not residency.
+- [x] Data hygiene: `research/model_profiles.yaml` oQ2 entry corrected
+      2026-09-21 — the stale `qwen3.5-35b-a3b-oQ-2bit @ est_gb 8.8`
+      ("Fits comfortably") is now `qwen3.6-35b-a3b-oQ2 @ est_gb 13.1`
+      measured, with the real repo id and the Smelt fit story in notes.
+      A test (`TestModelProfiles.test_oq2_profile_size_measured`) pins the
+      measured figure so the profile can't silently drift again.
+- [ ] Mac-side: Jundot oQ2 (13.1 GB) under vmlx --smelt 50 — measure
+      resident RAM, decode tok/s, and quality (MMLU subset) on Justin's
+      M1 Pro; check whether quality tracks the oQ2 64% MMLU baseline or
+      degrades from the resident-expert routing bias. If IQ2_XXS quality
+      disappoints on rung 3, this is the first fallback path.
 - [ ] Quant R&D: vmlx "Smelt" mode (partial expert loading) — NEW 2026-09-21
       from the JANG release watch: vmlx README documents `--smelt` /
       `--smelt-experts N` for MoE models that don't fit in RAM - keeps the
@@ -528,9 +541,9 @@ measuring where quality actually breaks.
       routing toward resident experts. Benchmark (Nemotron-Cascade-2-30B-A3B
       -JANG_4M, M3 Ultra 128 GB): 50% experts -> 9.5 GB RAM (-45%), 66.5
       tok/s (vs 17.4 GB / 89.9 baseline); 25% -> 5.6 GB (-68%).
-      Implication for the 35B-A3B path: the oQ2 35B-A3B (~12.6 GB) is
-      over-budget fully resident but could fit 16 GB under Smelt-50 at
-      ~2/3 speed - changes the "borderline" classification. Also of note
+      Implication for the 35B-A3B path: the oQ2 35B-A3B (13.1 GB measured
+      2026-09-21) is over-budget fully resident but could fit 16 GB under
+      Smelt-50 at ~2/3 speed - changes the "borderline" classification. Also of note
       from the same watch: oQ+ adds GPTQ weight optimization before
       quantization (sensitivity-driven bit allocation, batched over all
       routed experts), and JANG profiles are now explicit (JANG_2M/2L/3M/

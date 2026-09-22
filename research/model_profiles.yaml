@@ -81,15 +81,20 @@ profiles:
       public weights exist yet (public max ~8-10B, low token counts).
       Watch microsoft/BitNet and bitnet.cpp releases.
 
-  - name: qwen3.5-35b-a3b-oQ-2bit
+  - name: qwen3.6-35b-a3b-oQ2
     params_b: 35
     quant: oQ-mixed-2bit
-    est_gb: 8.8
+    est_gb: 13.1
     backend: mlx
     status: experimental
     notes: >
-      35B MoE, 3B active. Data-driven mixed precision: 64% MMLU at 2-bit vs
-      14% naive. Fits comfortably. Requires the future MLX backend.
+      Prebuilt oQ2 MLX quant of Qwen3.6-35B-A3B (oMLX v0.3.7, 2-bit,
+      group 64, MLX safetensors). 13.10 GB MEASURED 2026-09-21 via the
+      HF tree API (repo Jundot/Qwen3.6-35B-A3B-oQ2, uploaded 2026-04-23;
+      corrects the stale 8.8 GB estimate). Over the ~11 GB usable budget
+      fully resident — the fit story is vmlx --smelt 50 (~7 GB resident
+      est., needs Mac-side measurement). Best-benchmarked ~2-bit quality:
+      64% MMLU vs 14% naive (oMLX docs). Requires the MLX backend.
 
   - name: qwen3-30b-a3b-Q3_K_M
     params_b: 30

@@ -140,5 +140,35 @@ class TestRecipeConsistency(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(RECIPES, "RUNG3_qwen3_5_35b_a3b_moe.md")))
 
 
+class TestModelProfiles(unittest.TestCase):
+    """model_profiles.yaml must not drift from measured file sizes
+    (the IQ2_M and oQ2 misattributions both came from stale estimates)."""
+
+    def _profiles(self):
+        import yaml
+        with open(os.path.join(REPO, "research", "model_profiles.yaml")) as f:
+            return yaml.safe_load(f)["profiles"]
+
+    def _by_name(self, name):
+        for p in self._profiles():
+            if p["name"] == name:
+                return p
+        self.fail(f"profile {name!r} missing from model_profiles.yaml")
+
+    def test_oq2_profile_size_measured(self):
+        # Jundot/Qwen3.6-35B-A3B-oQ2 measured 13.10 GB via the HF tree API
+        # 2026-09-21; the old 8.8 GB "fits comfortably" estimate was wrong.
+        p = self._by_name("qwen3.6-35b-a3b-oQ2")
+        self.assertAlmostEqual(p["est_gb"], 13.1, delta=0.5)
+        self.assertGreater(p["est_gb"], 11.0, "oQ2 does not fit the usable budget")
+        self.assertIn("Jundot/Qwen3.6-35B-A3B-oQ2", p["notes"])
+        self.assertNotIn("Fits comfortably", p["notes"])
+
+    def test_profiles_have_known_backends(self):
+        for p in self._profiles():
+            self.assertIn(p["backend"], ("ollama", "llamacpp", "mlx", "bitnet.cpp"),
+                          p["name"])
+
+
 if __name__ == "__main__":
     unittest.main()
