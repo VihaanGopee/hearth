@@ -496,6 +496,8 @@ measuring where quality actually breaks.
       >=60B params). RE-SURVEYED 2026-09-22 ~11:50 PDT: still nothing
       >=70B — TQ1_0 hits unchanged (the Anjielon + nohurry 397B oddities
       only); TQ2_0 top-50 still zero entries >=34B.
+      RE-SURVEYED 2026-09-22 ~14:15 PDT: still nothing >=60B — TQ1_0
+      and TQ2_0 top-50-by-downloads both zero entries >=60B params.
 - [ ] Verify Ollama's Metal kernel path for TQ1_0/TQ2_0 quants on the Mac
       (type support confirmed at llama.cpp b10969; whether ternary matmuls
       take an optimized path or a slow fallback on Apple Silicon is
@@ -711,6 +713,10 @@ measuring where quality actually breaks.
       <=14B (tzervas i2_s/w158a8 re-quants of the 2B-4T, Synapticode
       TQ2_0 GGUF of 2B-4T at 821 dl, ArkCompact QAT series <=14B).
       Avenue-A trigger not hit.
+      SWEEP 2026-09-22 ~14:15 PDT: still nothing — microsoft/BitNet has
+      no GitHub releases at all (API returns []); the microsoft HF org's
+      recent uploads are rho-* robotics (2026-09-17/18/22, 0 dl) and no
+      new ternary model. Avenue-A trigger not hit.
 - [ ] Track oQ/JANG releases and 2-bit MoE quality reports (SWEEP
       2026-09-21 pm: vmlx README (updated ~2026-09-17) adds an explicit
       JANG profile table, Smelt benchmarks unchanged, and a new
@@ -741,6 +747,13 @@ measuring where quality actually breaks.
       3826 dl — but still no vmlx oQ loader, so the oQ2 rung-4 path
       stays dormant. Recipe conditions unchanged. Re-check
       periodically.)
+      SWEEP 2026-09-22 ~14:15 PDT: vmlx still v1.6.64 (2026-09-19), no
+      new releases; JANGQ-AI nothing new since 2026-09-09
+      (Spark-X2.5-4B-JANG_8M, 4B, irrelevant); Jundot nothing new in the
+      oQ2 class for 35B — latest remain DeepSeek-V4.1-Flash oQ3e-mtp
+      (2026-09-11, 2142 dl) / oQ4e-mtp (2026-09-10, 3826 dl): oQ
+      ecosystem healthy, but no rung-4-relevant upload. Recipe
+      conditions unchanged.
 - [ ] Track: novamlx (cnshsliu/novamlx) — NEW 2026-09-22: pure-Swift
       Mac-native LLM server with NovaMLX-TIE, a 3-tier (wired / LRU /
       SSD-mmap) inference engine with MoE-aware router-driven expert
@@ -793,6 +806,10 @@ measuring where quality actually breaks.
       SWEEP 2026-09-22 ~11:20 PDT: still no Qwen3.6-35B-A3B-iQ-MLX
       upload — today's uploads are MiMo-V2.6-Distill-Qwen-9B-MLX-Serve
       (4/6/8-bit, 9B, irrelevant); watch stands.
+      SWEEP 2026-09-22 ~14:15 PDT: still no Qwen3.6-35B-A3B-iQ-MLX
+      upload — today's uploads are MiMo-V2.6-Distill-Qwen-9B-MLX-Serve
+      (4/6/8-bit) and Qwen-Image-2.1-MLX-Serve; iQ-MLX family tops out at
+      Qwen3.8-27B 3.8bpw. Watch stands.
 - [ ] Track: mlxl3 (0xZKnw/mlxl3) — NEW 2026-09-22: EXL3
       inference/conversion engine on MLX with JIT Metal kernels and
       CPU-vs-Metal conformance tests at every bit width 1-8. EXL3 is a
@@ -817,6 +834,32 @@ measuring where quality actually breaks.
       35 GB+ on disk, over budget by a wide margin. Watch stands.
       SWEEP 2026-09-22 ~11:20 PDT: still nothing new (35B-A3B EXL3
       hits unchanged, newest 2026-03-26).
+      SWEEP 2026-09-22 ~14:15 PDT: the watched upload ARRIVED —
+      yeasah/Qwen3.6-35B-A3B-exl3 (published 2026-09-21, turboderp-adjacent
+      benchmarker; weights live as per-bitrate git revisions, invisible on
+      main). qbench numbers (openwebtext10k, 10 x 2048-token rows):
+      2.00bpw-H5 ppl 10.865 / KLD 0.1136 vs bf16 10.097 (+7.6%) at 2.13
+      bpw_layer; 3.00bpw-H5 ppl 10.205 (+1.1%) / KLD 0.0302; 6.00bpw is
+      ppl-identical to bf16 (10.097). README: 2.08 bpw = 10.83 GiB disk
+      / 9.88 GiB VRAM (exllamav3, embeddings CPU-offloaded) — INSIDE the
+      10-11 GB usable budget fully resident; tree API measures 11.72 GB
+      across 2 safetensors shards. Sibling Ornith-1.5-35B-A3B-exl3
+      (base ornith-ai/Ornith-1.5-35B-A3B) confirms the curve on a second
+      35B-A3B MoE: 2.00bpw-H5 ppl 12.336 vs bf16 11.431 (+7.9%), KLD
+      0.1775, 9.6 GB VRAM. This is the best ~2-bpw 35B-A3B fidelity
+      datapoint on record (+7.6% ppl vs JANG_2S's author-claimed 65.5%
+      MMLU and oQ2's measured 64% MMLU on the 3.5 variant). Caveats:
+      embeddings are NOT quantized in EXL3 (CPU-offload on exllamav3, perf
+      cost); vision encoder unquantized; engines are exllamav3 / vLLM via
+      vllm-exl3-plugin (CUDA only). The gating question is now purely the
+      Mac transport: mlxl3 MoE support is still in progress (mapped
+      two-launch SwitchGLU path) and it has no documented HTTP/API
+      surface — no path to run these weights on the Mac today. If mlxl3
+      (or an exllamav3 Metal port) ships server mode + Qwen3.6-35B-A3B
+      MoE, the 2.08bpw weights become a second rung-4 candidate: run our
+      19-prompt battery vs JANG_2S smelt-50 (note: 3.6 base vs rung-3's
+      3.5 base, so not same-base; a Qwen3.5-35B-A3B 2bpw EXL3 upload
+      would enable the apples-to-apples comparison).
 - [x] Quant R&D: JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S candidate — NEW
       2026-09-21 (pm sweep): prebuilt MLX JANG 2-bit for OUR rung-3
       model. Measured **11.67 GB** via HF tree API — but the model card
@@ -933,7 +976,8 @@ measuring where quality actually breaks.
       if quality reports appear, evaluate as a 35B-A3B alternative at
       smaller size. (NEW 2026-09-21 pm sweep; STILL 0 DOWNLOADS 2026-09-22
       ~03:50 PDT, STILL 0 DOWNLOADS as of 2026-09-22 ~04:50 PDT,
-      STILL 0 as of 2026-09-22 ~11:20 PDT — no quality signal yet.)
+      STILL 0 as of 2026-09-22 ~11:20 PDT — no quality signal yet.
+      STILL 0 as of 2026-09-22 ~14:15 PDT — no quality signal yet.)
 - [x] Quant R&D: low-active-parameter MoE survey — SURVEYED 2026-09-21
       (research/moe_survey_2026-09-21.md). Central candidate confirmed:
       Qwen3.5-35B-A3B (35B total / 3.3B active, 256 experts 8+1 shared,
@@ -1379,6 +1423,8 @@ measuring where quality actually breaks.
       nothing — newest JANGQ-AI upload is Spark-X2.5-4B-JANG_8M
       (2026-09-09, 4B, irrelevant); latest 35B-A3B entries still
       2026-09-08/09; no JANG_2L/JANG_2M for Qwen3.6-35B-A3B.
+      SWEEP 2026-09-22 ~14:15 PDT: still nothing — JANGQ-AI latest
+      upload remains 2026-09-09 (Spark-X2.5-4B-JANG_8M).
       (NEW 2026-09-22)
 - [ ] Mac-side: confirm the JANG_2S serve path end to end — the JANG_2S
       profile is confirmed in the vmlx source (HYBRID_JANG_PROFILES) and
