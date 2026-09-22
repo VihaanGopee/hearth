@@ -1004,6 +1004,13 @@ measuring where quality actually breaks.
       under --smelt with a clean startup/load is a loader signature, not
       a bad quant; the recipe now pins the non-Smelt control-serve step.
       Watch vmlx release notes for Smelt loader regressions.
+      RE-VERIFIED 2026-09-22 ~12:15 PDT: vmlx still v1.6.64 (2026-09-19);
+      JANG_2S still in HYBRID_JANG_PROFILES on vmlx main (jangCompat.ts);
+      vmlx#81 mxtq guard still present in smelt_loader.py main
+      (JANGTQ raises, JANG passes); ExpertIndex still scans the Qwen 3.5
+      switch_mlp naming; no new Smelt/JANG_2S issues in the tracker;
+      JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S untouched since 2026-09-08
+      (sha 0c7f824520b1, 145 dl). Recipe conditions hold.
       (NEW 2026-09-22 — replaces the oQ2 item)
 - [ ] Quant R&D: vmlx "Smelt" mode (partial expert loading) — NEW 2026-09-21
       from the JANG release watch: vmlx README documents `--smelt` /
