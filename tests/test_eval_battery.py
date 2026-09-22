@@ -71,6 +71,12 @@ class TestCheckItem(unittest.TestCase):
         passed, _ = eval_battery.check_item(item, "The answer is 6.")
         self.assertFalse(passed)
 
+    def test_exact_ignores_trailing_punctuation(self):
+        # regression: "Knave." must score the same as "knave"
+        item = self._item([{"kind": "exact", "value": "knave"}])
+        passed, failed = eval_battery.check_item(item, "Knave.")
+        self.assertTrue(passed, failed)
+
     def test_contains_case_insensitive(self):
         item = self._item([{"kind": "contains", "values": ["mixed"]}])
         passed, failed = eval_battery.check_item(item, "The MIXED box.")

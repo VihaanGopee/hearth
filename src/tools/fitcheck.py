@@ -44,6 +44,12 @@ ARCHES = {
     # (unmodeled here). MoE; weights counted on total params (34.65B),
     # decode traffic on active (~3.3B).
     "qwen3.5-35b-a3b": (40, 2, 256, 10),
+    # Qwen3.6-35B-A3B: same hybrid MoE skeleton (40 layers, GQA-2 KV heads,
+    # head_dim 256, full_attention_interval=4 -> 10 KV layers), per the
+    # Jundot/Qwen3.6-35B-A3B-oQ2 config.json text_config (HF API raw fetch
+    # 2026-09-21). Used for the rung-4 oQ2/Smelt recipe. The oQ2 weights
+    # include a 333-tensor vision tower (unused for text eval).
+    "qwen3.6-35b-a3b": (40, 2, 256, 10),
 }
 
 

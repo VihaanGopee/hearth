@@ -170,6 +170,12 @@ def _norm(text):
     return re.sub(r"\s+", " ", text.strip().lower())
 
 
+def _norm_exact(text):
+    # Exact-answer checks ignore trailing punctuation: "Knave." must count
+    # the same as "knave". A right answer in polite wrapping is still right.
+    return re.sub(r"\s+", " ", text.strip().lower().rstrip(".!?;:"))
+
+
 def check_item(item, answer):
     """Return (passed, failed_check_descriptions)."""
     normed = _norm(answer)
@@ -188,7 +194,7 @@ def check_item(item, answer):
             if present:
                 failed.append("forbidden present %r" % (present,))
         elif kind == "exact":
-            if normed != check["value"].lower():
+            if _norm_exact(answer) != check["value"].lower():
                 failed.append("expected exactly %r, got %r"
                               % (check["value"], answer.strip()[:60]))
         elif kind == "sentence_count":
