@@ -16,6 +16,8 @@ Checks:
   7. vmlx_release    — latest vmlx GitHub release (jjang-ai/vmlx)
   8. mlxl3_release   — latest mlxl3 GitHub release (0xZKnw/mlxl3)
   9. exl3_35b        — newest 35B-A3B EXL3 uploads (2-bpw-class watch)
+  10. novamlx_release — latest novamlx GitHub release (cnshsliu/novamlx;
+      TIE/Smelt paging + 2-bit format support are the watch conditions)
 
 Usage:
     python3 -m tools.watch_sweep [--snapshot PATH] [--full]
@@ -218,6 +220,20 @@ def check_mlxl3_release(get):
     return {"release": _gh_latest_release("0xZKnw/mlxl3", get)}
 
 
+def check_novamlx_release(get):
+    """Latest novamlx GitHub release.
+
+    novamlx (cnshsliu/novamlx) is the Mac-native Swift MoE-paging server
+    with NovaMLX-TIE 3-tier streaming — architecturally a smarter Smelt for
+    the 13.1 GB oQ2. The watch conditions from the 2026-09-22 doc check:
+    (a) 2-bit format support landing (currently SafeTensors 4/8-bit, FP16,
+    NVFP4 only — cannot serve oQ2), (b) a 4-bit 35B-A3B path worth
+    comparing against vmlx --smelt. Both would arrive as release-note
+    headlines, which is what this check tracks.
+    """
+    return {"release": _gh_latest_release("cnshsliu/novamlx", get)}
+
+
 def check_exl3_35b(get):
     """Newest 35B-A3B EXL3 uploads (2-bpw-class watch)."""
     entries = _hf_models(
@@ -245,6 +261,7 @@ CHECKS = [
     ("vmlx_release", check_vmlx_release),
     ("mlxl3_release", check_mlxl3_release),
     ("exl3_35b", check_exl3_35b),
+    ("novamlx_release", check_novamlx_release),
 ]
 
 
@@ -430,7 +447,7 @@ def format_baseline(results, errors):
                 "  microsoft: newest=%s; largest recent bitnet=%s"
                 % (d["newest_id"], lb["id"] if lb else None)
             )
-        elif name in ("vmlx_release", "mlxl3_release"):
+        elif name in ("vmlx_release", "mlxl3_release", "novamlx_release"):
             r = d["release"]
             out.append(
                 "  %s: %s (%s)" % (name, r["tag"], (r["published_at"] or "?")[:10])

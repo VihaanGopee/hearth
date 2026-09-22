@@ -1480,6 +1480,16 @@ measuring where quality actually breaks.
       `python3 -m tools.watch_sweep --full` and reading the CHANGES
       section — when the roadmap's watch set grows (e.g. new ecosystem
       players like novamlx), add a check + test FIRST, then rely on it.
+      UPDATED 2026-09-22 (~15:45 session): 10th check added —
+      `novamlx_release` (cnshsliu/novamlx latest GitHub release), per the
+      item's own guidance. novamlx was the one tracked ecosystem player
+      with no coverage; its watch conditions (2-bit format support
+      landing, a 4-bit 35B-A3B path) would arrive as release-note
+      headlines, which is what the check tracks. 4 new tests; suite 480
+      green (baseline was 476). Live run verified end to end against the
+      real GitHub API: novamlx **v1.4.1 (2026-09-16)** is the current
+      release — baseline recorded, and the other 9 checks reported no
+      changes vs the 15:15 snapshot.
       (NEW 2026-09-22)
 
 ## Ground rules for this research track

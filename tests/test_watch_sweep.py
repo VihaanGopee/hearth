@@ -18,6 +18,7 @@ from tools.watch_sweep import (
     _params_billions,
     check_ddalcu_iqmlx,
     check_jangqai_latest,
+    check_novamlx_release,
     check_tq_gguf_70b,
     diff_check,
     format_baseline,
@@ -118,6 +119,41 @@ class TestJangQaiCheck(unittest.TestCase):
         self.assertEqual(d["newest"][0]["id"], "JANGQ-AI/Qwen3.6-35B-A3B-JANG_2L")
 
 
+class TestNovamlxCheck(unittest.TestCase):
+    def test_release_shape(self):
+        get = FakeGet(
+            [
+                (
+                    "cnshsliu/novamlx",
+                    [{"tag_name": "v0.9.0", "published_at": "2026-09-20"}],
+                )
+            ]
+        )
+        d = check_novamlx_release(get)
+        self.assertEqual(d["release"]["tag"], "v0.9.0")
+        self.assertEqual(d["release"]["published_at"], "2026-09-20")
+
+    def test_no_releases(self):
+        get = FakeGet([("cnshsliu/novamlx", [])])
+        d = check_novamlx_release(get)
+        self.assertIsNone(d["release"]["tag"])
+
+    def test_baseline_renders_tag(self):
+        get = FakeGet(
+            [("cnshsliu/novamlx", [{"tag_name": "v0.9.0", "published_at": "x"}])]
+        )
+        bl = format_baseline({"novamlx_release": check_novamlx_release(get)}, {})
+        self.assertTrue(any("novamlx_release: v0.9.0" in l for l in bl))
+
+    def test_tag_bump_shows_in_deltas(self):
+        # diff_check takes the per-check snapshot dict (as format_report passes it)
+        old = {"release": {"tag": "v0.9.0"}}
+        new = {"release": {"tag": "v0.10.0"}}
+        changed, lines = diff_check("novamlx_release", old, new)
+        self.assertTrue(changed)
+        self.assertTrue(any("release tag v0.9.0 -> v0.10.0" in l for l in lines))
+
+
 class TestDdalcuCheck(unittest.TestCase):
     def test_json_serializable(self):
         get = FakeGet(
@@ -194,20 +230,21 @@ class TestRunSweep(unittest.TestCase):
             ("author=microsoft&sort", [_entry("microsoft/BitNet-b1.58-2B-4T", 9000)]),
             ("jjang-ai/vmlx", [{"tag_name": "v1.6.64", "published_at": "2026-09-19"}]),
             ("0xZKnw/mlxl3", [{"tag_name": "v1.1.1", "published_at": "2026-09-22"}]),
+            ("cnshsliu/novamlx", [{"tag_name": "v0.9.0", "published_at": "2026-09-20"}]),
             ("search=35B-A3B-exl3", [_entry("yeasah/Qwen3.6-35B-A3B-exl3")]),
         ]
 
-    def test_all_nine_checks_run(self):
+    def test_all_ten_checks_run(self):
         results, errors = run_sweep(FakeGet(self._routes()))
         self.assertEqual(errors, {})
-        self.assertEqual(len(results), 9)
-        self.assertEqual(len(CHECKS), 9)
+        self.assertEqual(len(results), 10)
+        self.assertEqual(len(CHECKS), 10)
 
     def test_one_failing_check_does_not_kill_sweep(self):
         get = FakeGet(self._routes(), fail=("jjang-ai/vmlx",))
         results, errors = run_sweep(get)
         self.assertIn("vmlx_release", errors)
-        self.assertEqual(len(results), 8)
+        self.assertEqual(len(results), 9)
 
     def test_report_and_baseline(self):
         results, errors = run_sweep(FakeGet(self._routes()))
@@ -217,7 +254,7 @@ class TestRunSweep(unittest.TestCase):
         self.assertIn("BASELINE:", report)
         self.assertIn("tq: >=60B entries:", report)
         bl = format_baseline(results, errors)
-        self.assertEqual(len(bl), 9)
+        self.assertEqual(len(bl), 10)
         # release lines render tag + date
         self.assertTrue(any("v1.6.64" in l for l in bl))
 
