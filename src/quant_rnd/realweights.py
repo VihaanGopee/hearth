@@ -95,6 +95,21 @@ def linear_weight_tensors(tensors: dict) -> dict:
     return out
 
 
+def layer_index_of(name: str) -> int | None:
+    """Transformer block index of a weight name, or None.
+
+    GPT-2 (and Llama-family) linear weights are named like
+    "h.3.attn.c_attn.weight" -> block 3. Anything without that
+    "h.<int>." prefix (embeddings, biases, LayerNorm scales) returns
+    None. Used by the per-layer mixed-precision selector: only linear
+    weights have a block index, which is exactly the targeting set.
+    """
+    parts = name.split(".")
+    if len(parts) >= 2 and parts[0] == "h" and parts[1].isdigit():
+        return int(parts[1])
+    return None
+
+
 def sample_groups(tensor: np.ndarray, n_groups: int,
                   group_size: int = GROUP_SIZE,
                   rng: np.random.Generator | None = None) -> np.ndarray:

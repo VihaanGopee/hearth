@@ -37,7 +37,7 @@ import numpy as np
 
 from .gpt2_forward import GPT2
 from .gpt2_tokenizer import GPT2Tokenizer
-from .realweights import read_safetensors, linear_weight_tensors
+from .realweights import layer_index_of, read_safetensors, linear_weight_tensors
 from .schemes import GROUP_SIZE, SCHEMES
 
 # Mirrors the exclusion list in realweights.linear_weight_tensors: tensors
@@ -211,6 +211,128 @@ def quantize_one_layer_obq(tensors: dict, token_ids,
     return quantize_model_obq(tensors, token_ids, group_size=group_size,
                               damp_frac=damp_frac,
                               only_names={layer_name})
+
+
+def parse_layer_schemes(spec: str, n_layers: int) -> dict:
+    """Parse a per-layer scheme spec into {block_idx: scheme_name}.
+
+    Format: comma-separated "RANGE:scheme" items, where RANGE is "i",
+    "i-j" (inclusive), e.g. "0-5:int8_uniform,6-11:ternary_1step".
+    Whitespace around items is ignored. Validation (ValueError): every
+    block 0..n_layers-1 must be assigned EXACTLY once (no gaps, no
+    overlaps), indices must be in range, and scheme names must exist in
+    SCHEMES. The strict coverage rule is what makes the reported
+    average bpw honest: no block is silently left at fp32.
+    """
+    if n_layers < 1:
+        raise ValueError("n_layers must be >= 1")
+    assignment: dict = {}
+    for raw in spec.split(","):
+        item = raw.strip()
+        if not item:
+            continue
+        if ":" not in item:
+            raise ValueError(f"bad layer-scheme item {item!r}: "
+                             "expected RANGE:scheme")
+        rng, scheme = item.split(":", 1)
+        scheme = scheme.strip()
+        rng = rng.strip()
+        if scheme not in SCHEMES:
+            raise ValueError(f"unknown scheme {scheme!r} in {item!r}; "
+                             f"have {sorted(SCHEMES)}")
+        if "-" in rng:
+            lo_s, hi_s = rng.split("-", 1)
+            lo, hi = int(lo_s), int(hi_s)
+            if lo > hi:
+                raise ValueError(f"inverted range {rng!r} in {item!r}")
+            idxs = range(lo, hi + 1)
+        else:
+            idxs = (int(rng),)
+        for i in idxs:
+            if not 0 <= i < n_layers:
+                raise ValueError(f"block index {i} out of range "
+                                 f"[0, {n_layers}) in {item!r}")
+            if i in assignment:
+                raise ValueError(f"block {i} assigned twice in {spec!r}")
+            assignment[i] = scheme
+    missing = [i for i in range(n_layers) if i not in assignment]
+    if missing:
+        raise ValueError(f"blocks {missing} have no scheme in {spec!r}; "
+                         "every block 0..n_layers-1 must be assigned")
+    return assignment
+
+
+def sensitive_top_k(trace: dict, k: int) -> list:
+    """Top-k block indices by Fisher trace, descending; ties break by
+    lower index (deterministic). ValueError unless 1 <= k <= len(trace).
+    """
+    if not isinstance(k, int) or not 1 <= k <= len(trace):
+        raise ValueError(f"k must satisfy 1 <= k <= {len(trace)}; "
+                         f"got {k!r}")
+    return sorted(trace, key=lambda i: (-trace[i], i))[:k]
+
+
+def quantize_model_per_layer(tensors: dict, layer_schemes: dict,
+                             group_size: int = GROUP_SIZE) -> tuple:
+    """Quantize each linear weight with its block's scheme; return
+    (weights, avg_bpw).
+
+    `layer_schemes` maps block index -> scheme name (see
+    parse_layer_schemes). Only linear weights (the
+    linear_weight_tensors set, embeddings excluded, biases/LN fp32)
+    are quantized — same targeting as quantize_model. A linear weight
+    whose block index has no entry in layer_schemes raises KeyError,
+    as does a linear weight with no block index: the strictness keeps
+    the average bpw honest.
+
+    avg_bpw is the parameter-weighted mean of the per-tensor bpw over
+    the quantized targets (bits = params * bpw summed, divided by total
+    params) — this is the matched-bitrate denominator the
+    sensitivity-adaptive experiments are judged against.
+    """
+    linear = set(linear_weight_tensors(tensors))
+    out = {}
+    total_bits = 0.0
+    total_params = 0
+    for name, t in tensors.items():
+        t32 = np.ascontiguousarray(t, dtype=np.float32)
+        if name in linear:
+            idx = layer_index_of(name)
+            if idx is None:
+                raise KeyError(f"linear weight {name!r} has no block "
+                               "index; cannot assign a per-layer scheme")
+            if idx not in layer_schemes:
+                raise KeyError(f"block {idx} (tensor {name!r}) has no "
+                               "scheme in layer_schemes")
+            scheme = layer_schemes[idx]
+            if scheme not in SCHEMES:
+                raise KeyError(f"unknown scheme {scheme!r}; "
+                               f"have {sorted(SCHEMES)}")
+            q = SCHEMES[scheme](t32.ravel(), group_size=group_size)
+            out[name] = q.reconstruct().reshape(t.shape)
+            n = t32.size
+            total_bits += n * q.bpw
+            total_params += n
+        else:
+            out[name] = t32
+    avg_bpw = total_bits / total_params if total_params else 0.0
+    return out, avg_bpw
+
+
+def mixed_scheme_label(layer_schemes: dict) -> str:
+    """Compact sweep-table label: 'mix[0-2:int8_uniform,3-11:ternary_1step]'."""
+    n = max(layer_schemes) + 1
+    runs = []
+    start = prev = 0
+    for i in range(1, n):
+        if layer_schemes.get(i) != layer_schemes[prev]:
+            runs.append((start, prev, layer_schemes[prev]))
+            start = i
+        prev = i
+    runs.append((start, prev, layer_schemes[prev]))
+    parts = [f"{a}" if a == b else f"{a}-{b}" for a, b, _ in runs]
+    return ("mix[" + ",".join(f"{p}:{s}"
+                              for p, (_, _, s) in zip(parts, runs)) + "]")
 
 
 def main_obq_ckpt(args: argparse.Namespace, tensors: dict, token_ids,
@@ -409,6 +531,34 @@ def parse_args(argv: list | None = None) -> argparse.Namespace:
                          "fp32); with --quantize-embeddings this isolates "
                          "one embedding table, e.g. --only-names "
                          "wte.weight. Mutually exclusive with --one-layer")
+    ap.add_argument("--per-layer-schemes", default=None, metavar="SPEC",
+                    help="per-block scheme assignment, e.g. "
+                         "'0-5:int8_uniform,6-11:ternary_1step' (ranges "
+                         "inclusive; every block must be assigned exactly "
+                         "once). Each linear weight is quantized with its "
+                         "block's scheme and the reported bpw is the "
+                         "parameter-weighted average — the "
+                         "sensitivity-adaptive bit-allocation harness "
+                         "(see roadmap fidelity-retrospective item). "
+                         "Mutually exclusive with --one-layer/--only-names/"
+                         "--obq/--obq-all and with --sensitive-layers")
+    ap.add_argument("--sensitive-layers", type=int, default=None, metavar="K",
+                    help="K most Fisher-sensitive blocks (diag-Fisher "
+                         "trace, captured on the first eval text) are "
+                         "quantized with --sensitive-scheme, the rest with "
+                         "--base-scheme. The reported bpw is the "
+                         "parameter-weighted average; pick the schemes so "
+                         "it matches the anchor bitrate for an "
+                         "apples-to-apples comparison (e.g. K=5, "
+                         "int8_uniform + ternary_1step -> ~2.378 vs the "
+                         "2.375 int2_kmeans_q8 anchor). Same mutual "
+                         "exclusions as --per-layer-schemes")
+    ap.add_argument("--sensitive-scheme", default=None, metavar="NAME",
+                    help="scheme for the top-K sensitive blocks "
+                         "(requires --sensitive-layers)")
+    ap.add_argument("--base-scheme", default=None, metavar="NAME",
+                    help="scheme for the remaining blocks "
+                         "(requires --sensitive-layers)")
     ap.add_argument("--obq", action="store_true",
                     help="quantize the --one-layer tensor with OBQ "
                          "error compensation (GPTQ-style block update, "
@@ -452,6 +602,107 @@ def check_obq_args(args: argparse.Namespace) -> None:
         raise SystemExit("--obq-max-layers must be >= 0")
 
 
+def count_blocks(tensors: dict) -> int:
+    """Number of transformer blocks = max block index + 1 over the
+    linear weights. KeyError if any linear weight lacks a block index."""
+    idxs = [layer_index_of(n) for n in linear_weight_tensors(tensors)]
+    if any(i is None for i in idxs):
+        raise KeyError("a linear weight has no block index; per-layer "
+                       "schemes are unsupported for this model")
+    if not idxs:
+        raise KeyError("no linear weights found; per-layer schemes "
+                       "are unsupported for this model")
+    return max(idxs) + 1
+
+
+def check_mixed_args(args: argparse.Namespace) -> None:
+    """Validate the --per-layer-schemes/--sensitive-layers combination;
+    SystemExit on misuse. Factored for testability."""
+    pls, sl = args.per_layer_schemes, args.sensitive_layers
+    if pls and sl is not None:
+        raise SystemExit("--per-layer-schemes and --sensitive-layers are "
+                         "mutually exclusive")
+    if (args.one_layer or args.only_names or args.obq or args.obq_all) \
+            and (pls or sl is not None):
+        raise SystemExit("--per-layer-schemes/--sensitive-layers are "
+                         "mutually exclusive with "
+                         "--one-layer/--only-names/--obq/--obq-all")
+    if sl is not None:
+        if not args.sensitive_scheme or not args.base_scheme:
+            raise SystemExit("--sensitive-layers requires "
+                             "--sensitive-scheme and --base-scheme")
+        for flag, val in (("--sensitive-scheme", args.sensitive_scheme),
+                          ("--base-scheme", args.base_scheme)):
+            if val not in SCHEMES:
+                raise ValueError(f"unknown {flag} {val!r}; "
+                                 f"have {sorted(SCHEMES)}")
+    if (args.sensitive_scheme or args.base_scheme) and sl is None:
+        raise SystemExit("--sensitive-scheme/--base-scheme require "
+                         "--sensitive-layers")
+    if args.fisher and (pls or sl is not None):
+        raise SystemExit("--fisher is not supported with per-layer "
+                         "schemes (sensitivity selection runs its own "
+                         "Fisher capture)")
+    if args.quantize_embeddings and (pls or sl is not None):
+        raise SystemExit("--quantize-embeddings is not supported with "
+                         "per-layer schemes (the embedding probe stays "
+                         "a separate protocol)")
+
+
+def resolve_layer_schemes(args: argparse.Namespace, tensors: dict,
+                          token_ids, text_label: str) -> tuple:
+    """Resolve the mixed-precision plan into ({block: scheme}, label).
+
+    --per-layer-schemes parses directly. --sensitive-layers captures the
+    diag-Fisher trace on `token_ids` (the first eval text — the same
+    calibration-on-eval caveat as --fisher) and assigns the K most
+    sensitive blocks to --sensitive-scheme, the rest to --base-scheme.
+    """
+    n = count_blocks(tensors)
+    if args.per_layer_schemes:
+        assignment = parse_layer_schemes(args.per_layer_schemes, n)
+        return assignment, "mix[" + args.per_layer_schemes.strip() + "]"
+    from .fisher import layer_fisher_trace
+    print(f"capturing diag-Fisher trace on {text_label} (one fp32 "
+          "forward)...", flush=True)
+    trace = layer_fisher_trace(tensors, token_ids)
+    try:
+        top = sensitive_top_k(trace, args.sensitive_layers)
+    except ValueError as e:
+        raise SystemExit(f"--sensitive-layers: {e}")
+    ranked = sorted(trace, key=lambda i: (-trace[i], i))
+    print("block sensitivity ranking (trace desc; * = top-K):",
+          flush=True)
+    for i in ranked:
+        mark = "*" if i in top else " "
+        print(f"  {mark} block {i:2d}: trace {trace[i]:.6g}", flush=True)
+    top_set = set(top)
+    assignment = {i: (args.sensitive_scheme if i in top_set
+                      else args.base_scheme)
+                  for i in range(n)}
+    label = (f"mix[sensitive-top{args.sensitive_layers}"
+             f"[{args.sensitive_scheme}]+rest[{args.base_scheme}]]")
+    return assignment, label
+
+
+def run_mixed(tensors: dict, texts: list, assignment: dict, label: str,
+              group_size: int = GROUP_SIZE) -> tuple:
+    """Quantize once with the per-layer assignment, evaluate perplexity
+    on every text. Returns (label, entry) where entry matches the
+    run_multitext_sweep value shape {"bpw", "ppls", "secs"}."""
+    t0 = time.time()
+    qw, avg_bpw = quantize_model_per_layer(tensors, assignment,
+                                           group_size)
+    print(f"{label}: avg bpw {avg_bpw:.3f}", flush=True)
+    ppls = {}
+    for text_label, ids in texts:
+        ppl = perplexity_of(qw, ids)
+        ppls[text_label] = ppl
+        print(f"{label:<22} [{text_label}] ppl {ppl:8.2f}", flush=True)
+    return label, {"bpw": avg_bpw, "ppls": ppls,
+                   "secs": time.time() - t0}
+
+
 def main() -> None:
     args = parse_args()
     if args.one_layer and args.only_names:
@@ -476,10 +727,14 @@ def main() -> None:
         texts.append((label, ids))
         print(f"eval text {label}: {len(ids)} tokens")
     check_obq_args(args)
+    check_mixed_args(args)
     if len(texts) > 1 and (args.obq_all or args.obq):
         print("note: OBQ probes run on the first eval text only "
               f"({texts[0][0]})")
     ids = texts[0][1]
+    mixed_plan = None
+    if args.per_layer_schemes or args.sensitive_layers is not None:
+        mixed_plan = resolve_layer_schemes(args, tensors, ids, texts[0][0])
     if args.obq_all:
         if args.obq_ckpt_dir:
             main_obq_ckpt(args, tensors, ids, texts[0][0])
@@ -530,6 +785,14 @@ def main() -> None:
                             sample_weights=sample_weights,
                             quantize_embeddings=args.quantize_embeddings,
                             only_names=only)
+        if mixed_plan is not None:
+            assignment, mlabel = mixed_plan
+            mlabel, entry = run_mixed(tensors, texts, assignment, mlabel,
+                                      args.group_size)
+            results.append({"scheme": mlabel,
+                            "ppl": entry["ppls"][texts[0][0]],
+                            "bpw": entry["bpw"], "secs": entry["secs"]})
+            results.sort(key=lambda r: r["ppl"])
         print_report(results)
         return
     results = run_multitext_sweep(tensors, texts, scheme_names,
@@ -537,6 +800,11 @@ def main() -> None:
                                   use_fisher=args.fisher,
                                   quantize_embeddings=args.quantize_embeddings,
                                   only_names=only)
+    if mixed_plan is not None:
+        assignment, mlabel = mixed_plan
+        mlabel, entry = run_mixed(tensors, texts, assignment, mlabel,
+                                  args.group_size)
+        results[mlabel] = entry
     rows = aggregate_multitext(results)
     print_multitext_report(rows, [label for label, _ in texts])
 

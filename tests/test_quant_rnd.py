@@ -2195,5 +2195,227 @@ class TestFisherCaptureGated(unittest.TestCase):
             self.assertTrue(np.all(seg == e[j]), (name, j))
 
 
+from src.quant_rnd.fisher import layer_fisher_trace
+from src.quant_rnd.ppl import (
+    check_mixed_args,
+    count_blocks,
+    mixed_scheme_label,
+    parse_layer_schemes,
+    quantize_model_per_layer,
+    resolve_layer_schemes,
+    run_mixed,
+    sensitive_top_k,
+)
+from src.quant_rnd.realweights import layer_index_of
+
+
+class TestLayerWiseMixedPrecision(unittest.TestCase):
+    """Per-block scheme selector: parsing, sensitivity ranking, and the
+    parameter-weighted bpw plumbing. Real-model numbers live in the
+    research log; one gated test below pins the Fisher-trace plumbing
+    on the real checkpoint."""
+
+    @staticmethod
+    def _fake_two_blocks():
+        rng = np.random.default_rng(7)
+        return {
+            "h.0.mlp.c_fc.weight": rng.standard_normal((64, 32)).astype(np.float32),
+            "h.0.attn.c_proj.weight": (0.1 * rng.standard_normal((32, 64))).astype(np.float32),
+            "h.1.mlp.c_fc.weight": rng.standard_normal((16, 48)).astype(np.float32),
+            # pass-through: embeddings, biases
+            "wte.weight": rng.standard_normal((50, 64)).astype(np.float32),
+            "h.0.mlp.c_fc.bias": rng.standard_normal((32,)).astype(np.float32),
+        }
+
+    # -- layer_index_of --
+
+    def test_layer_index_of(self):
+        self.assertEqual(layer_index_of("h.0.attn.c_attn.weight"), 0)
+        self.assertEqual(layer_index_of("h.11.mlp.c_fc.weight"), 11)
+        self.assertIsNone(layer_index_of("wte.weight"))
+        self.assertIsNone(layer_index_of("ln_f.weight"))
+        self.assertIsNone(layer_index_of("h.weight"))
+
+    # -- parse_layer_schemes --
+
+    def test_parse_layer_schemes_valid(self):
+        a = parse_layer_schemes("0-5:int8_uniform,6-11:ternary_1step", 12)
+        self.assertEqual(a, {i: "int8_uniform" for i in range(6)}
+                         | {i: "ternary_1step" for i in range(6, 12)})
+        b = parse_layer_schemes(" 0 : ternary_uniform , 1-2 : int8_uniform ",
+                                3)
+        self.assertEqual(b, {0: "ternary_uniform", 1: "int8_uniform",
+                             2: "int8_uniform"})
+
+    def test_parse_layer_schemes_gaps_overlaps_ranges(self):
+        with self.assertRaises(ValueError):  # gap at block 5
+            parse_layer_schemes("0-4:int8_uniform,6-11:ternary_1step", 12)
+        with self.assertRaises(ValueError):  # block 5 twice
+            parse_layer_schemes("0-5:int8_uniform,5-11:ternary_1step", 12)
+        with self.assertRaises(ValueError):  # block 12 out of range
+            parse_layer_schemes("0-12:ternary_1step", 12)
+        with self.assertRaises(ValueError):  # inverted range
+            parse_layer_schemes("5-2:ternary_1step,0-1:int8_uniform", 6)
+        with self.assertRaises(ValueError):  # unknown scheme
+            parse_layer_schemes("0-11:nope", 12)
+        with self.assertRaises(ValueError):  # missing colon
+            parse_layer_schemes("0-11", 12)
+        with self.assertRaises(ValueError):  # empty spec covers nothing
+            parse_layer_schemes("", 2)
+
+    # -- sensitive_top_k --
+
+    def test_sensitive_top_k_order_and_ties(self):
+        trace = {0: 1.0, 1: 5.0, 2: 5.0, 3: 0.5}
+        self.assertEqual(sensitive_top_k(trace, 2), [1, 2])
+        self.assertEqual(sensitive_top_k(trace, 3), [1, 2, 0])
+
+    def test_sensitive_top_k_bad_k(self):
+        trace = {0: 1.0, 1: 2.0}
+        for bad in (0, 3, -1, "2"):
+            with self.assertRaises(ValueError):
+                sensitive_top_k(trace, bad)
+
+    # -- count_blocks --
+
+    def test_count_blocks(self):
+        self.assertEqual(count_blocks(self._fake_two_blocks()), 2)
+        with self.assertRaises(KeyError):
+            count_blocks({})
+
+    # -- quantize_model_per_layer --
+
+    def test_per_layer_quantize_matches_single_scheme(self):
+        fake = self._fake_two_blocks()
+        assignment = {0: "int8_uniform", 1: "ternary_1step"}
+        out, avg_bpw = quantize_model_per_layer(fake, assignment,
+                                                group_size=32)
+        # per-tensor output is independent of the other blocks' schemes
+        ref8, _ = quantize_model(fake, "int8_uniform", group_size=32)
+        ref3, _ = quantize_model(fake, "ternary_1step", group_size=32)
+        np.testing.assert_array_equal(out["h.0.mlp.c_fc.weight"],
+                                      ref8["h.0.mlp.c_fc.weight"])
+        np.testing.assert_array_equal(out["h.1.mlp.c_fc.weight"],
+                                      ref3["h.1.mlp.c_fc.weight"])
+        # pass-through tensors unchanged
+        np.testing.assert_array_equal(out["wte.weight"], fake["wte.weight"])
+        np.testing.assert_array_equal(out["h.0.mlp.c_fc.bias"],
+                                      fake["h.0.mlp.c_fc.bias"])
+
+    def test_per_layer_avg_bpw_is_param_weighted(self):
+        fake = self._fake_two_blocks()
+        assignment = {0: "int8_uniform", 1: "ternary_1step"}
+        _, avg = quantize_model_per_layer(fake, assignment, group_size=32)
+        p0 = fake["h.0.mlp.c_fc.weight"].size + fake["h.0.attn.c_proj.weight"].size
+        p1 = fake["h.1.mlp.c_fc.weight"].size
+        b0 = SCHEMES["int8_uniform"](
+            np.zeros(p0, dtype=np.float32), group_size=32).bpw
+        b1 = SCHEMES["ternary_1step"](
+            np.zeros(p1, dtype=np.float32), group_size=32).bpw
+        self.assertAlmostEqual(avg, (p0 * b0 + p1 * b1) / (p0 + p1),
+                               places=9)
+
+    def test_per_layer_unknown_scheme_raises(self):
+        with self.assertRaises(KeyError):
+            quantize_model_per_layer(self._fake_two_blocks(),
+                                     {0: "nope", 1: "ternary_1step"},
+                                     group_size=32)
+
+    def test_per_layer_missing_block_raises(self):
+        with self.assertRaises(KeyError):
+            quantize_model_per_layer(self._fake_two_blocks(),
+                                     {0: "ternary_1step"}, group_size=32)
+
+    # -- mixed_scheme_label --
+
+    def test_mixed_scheme_label_runs(self):
+        a = {0: "int8_uniform", 1: "int8_uniform",
+             2: "ternary_1step", 3: "ternary_1step"}
+        self.assertEqual(mixed_scheme_label(a),
+                         "mix[0-1:int8_uniform,2-3:ternary_1step]")
+        b = {i: ("int8_uniform" if i < 5 else "ternary_1step")
+             for i in range(12)}
+        self.assertEqual(mixed_scheme_label(b),
+                         "mix[0-4:int8_uniform,5-11:ternary_1step]")
+
+    # -- check_mixed_args / CLI --
+
+    def _base_args(self):
+        return ppl_parse_args(["m.safetensors"])
+
+    def test_cli_mixed_flags_parse(self):
+        args = ppl_parse_args(["m.safetensors", "--per-layer-schemes",
+                               "0-5:int8_uniform,6-11:ternary_1step"])
+        self.assertEqual(args.per_layer_schemes,
+                         "0-5:int8_uniform,6-11:ternary_1step")
+        args = ppl_parse_args(["m.safetensors", "--sensitive-layers", "5",
+                               "--sensitive-scheme", "int8_uniform",
+                               "--base-scheme", "ternary_1step"])
+        self.assertEqual(args.sensitive_layers, 5)
+        self.assertEqual(args.sensitive_scheme, "int8_uniform")
+        self.assertEqual(args.base_scheme, "ternary_1step")
+
+    def test_check_mixed_args_defaults_ok(self):
+        check_mixed_args(self._base_args())  # no flags: no-op
+
+    def test_check_mixed_args_exclusions(self):
+        base = ["m.safetensors"]
+        # both modes at once
+        args = ppl_parse_args(base + ["--per-layer-schemes", "0:int8_uniform",
+                                       "--sensitive-layers", "1",
+                                       "--sensitive-scheme", "int8_uniform",
+                                       "--base-scheme", "ternary_1step"])
+        with self.assertRaises(SystemExit):
+            check_mixed_args(args)
+        # with one-layer / only-names / obq
+        for extra in (["--one-layer", "h.0.attn.c_attn.weight"],
+                      ["--only-names", "wte.weight"],
+                      ["--one-layer", "h.0.attn.c_attn.weight", "--obq"],
+                      ["--obq-all"]):
+            args = ppl_parse_args(base + ["--per-layer-schemes", "0:int8_uniform"] + extra)
+            with self.assertRaises(SystemExit):
+                check_mixed_args(args)
+        # sensitive scheme flags without --sensitive-layers
+        args = ppl_parse_args(base + ["--sensitive-scheme", "int8_uniform"])
+        with self.assertRaises(SystemExit):
+            check_mixed_args(args)
+        # --sensitive-layers without both schemes
+        args = ppl_parse_args(base + ["--sensitive-layers", "1"])
+        with self.assertRaises(SystemExit):
+            check_mixed_args(args)
+        # --fisher and --quantize-embeddings are separate protocols
+        args = ppl_parse_args(base + ["--per-layer-schemes", "0:int8_uniform",
+                                       "--fisher"])
+        with self.assertRaises(SystemExit):
+            check_mixed_args(args)
+        args = ppl_parse_args(base + ["--per-layer-schemes", "0:int8_uniform",
+                                       "--quantize-embeddings"])
+        with self.assertRaises(SystemExit):
+            check_mixed_args(args)
+
+    def test_check_mixed_args_unknown_sensitive_scheme(self):
+        args = ppl_parse_args(["m.safetensors", "--sensitive-layers", "1",
+                               "--sensitive-scheme", "nope",
+                               "--base-scheme", "ternary_1step"])
+        with self.assertRaises(ValueError):
+            check_mixed_args(args)
+
+
+class TestLayerFisherTraceGated(unittest.TestCase):
+    """Fisher-trace plumbing on the real GPT-2 checkpoint (gated: ~1
+    forward pass)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tensors = read_safetensors(GPT2_WEIGHTS)
+
+    def test_trace_covers_all_blocks(self):
+        trace = layer_fisher_trace(self.tensors, list(range(16)))
+        self.assertEqual(set(trace), set(range(12)))
+        self.assertTrue(all(v > 0 for v in trace.values()))
+        total = sum(trace.values())
+        self.assertTrue(math.isfinite(total) and total > 0)
+
+
 if __name__ == "__main__":
     unittest.main()
