@@ -372,63 +372,117 @@ def quantize_int2_kmeans_q8(w: np.ndarray, group_size: int = GROUP_SIZE,
                        group_size=group_size)
 
 
+def _ternary_lloyd_fit_batch(wp: np.ndarray, dual: bool,
+                             n_iter: int = 20,
+                             thresh_factor: float = 1.0,
+                             record_states: bool = False) -> tuple:
+    """Vectorized constrained 1-D Lloyd ternary fit, over all groups.
+
+    wp is the (n_groups, group_size) float32 padded array as returned by
+    _groups(). Runs exactly the _ternary_lloyd_fit alternating
+    assignment/refit per group, in float64, but as whole-array numpy ops
+    instead of a per-group Python loop (measured 2026-09-22: 1-step
+    24.7 vs 2.8 Mparams/s, n_iter=20 3.3 vs 0.8 Mparams/s).
+
+    Bit-identical to calling _ternary_lloyd_fit once per group (pinned
+    by test against a frozen copy of the old per-group loop): per-row
+    np.mean/np.sum reduce identically to their 1-D forms on this numpy
+    build, and the zero-filled masked sums match the masked-1-D means
+    because the extra zero terms are exact. If a future numpy changes
+    its reduction order, the pin test fails loudly.
+
+    Returns (s_pos, s_neg, codes, states): per-group float64 scales
+    (guarded at 1e-12 exactly like the per-group path), flat int8 codes
+    over all groups (truncate to the unpadded length yourself), and -
+    when record_states=True - the list of (s_pos, s_neg) snapshots
+    (heuristic init + one per applied update) used to rebuild the
+    single-group `history` diagnostic.
+    """
+    wf = np.asarray(wp, dtype=np.float64)
+    n_groups = wf.shape[0]
+    t = 0.5 * thresh_factor
+    if dual:
+        pos = wf > 0
+        neg = wf < 0
+        # Zero-filled masked sums in row order: identical to the
+        # masked-1-D mean of the per-group path (test-pinned); the
+        # np.maximum(..., 1) denominator only fires where np.where
+        # discards the result anyway.
+        s_pos = np.where(pos.any(axis=1),
+                         (wf * pos).sum(axis=1) / np.maximum(pos.sum(axis=1), 1),
+                         0.0)
+        s_neg = np.where(neg.any(axis=1),
+                         (-wf * neg).sum(axis=1) / np.maximum(neg.sum(axis=1), 1),
+                         0.0)
+    else:
+        s = np.mean(np.abs(wf), axis=1)
+        s_pos = s.copy()
+        s_neg = s.copy()
+    states = [(s_pos.copy(), s_neg.copy())] if record_states else None
+    for _ in range(n_iter):
+        a_pos = wf > t * s_pos[:, None]
+        a_neg = wf < -t * s_neg[:, None]
+        cnt_p = a_pos.sum(axis=1)
+        cnt_n = a_neg.sum(axis=1)
+        new_pos = np.where(cnt_p > 0,
+                           (wf * a_pos).sum(axis=1) / np.maximum(cnt_p, 1),
+                           s_pos)
+        new_neg = np.where(cnt_n > 0,
+                           (-wf * a_neg).sum(axis=1) / np.maximum(cnt_n, 1),
+                           s_neg)
+        if not dual:
+            n_assigned = cnt_p + cnt_n
+            # Elementwise int64*float64, same op order as the per-group
+            # path; the guarded denominator is only used where np.where
+            # keeps it (np.errstate silences the discarded 0/0).
+            with np.errstate(invalid="ignore", divide="ignore"):
+                new = ((cnt_p * new_pos + cnt_n * new_neg)
+                       / np.maximum(n_assigned, 1))
+            new = np.where(n_assigned > 0, new, s_pos)
+            new_pos = new
+            new_neg = new
+        # Per-group early exit, same condition as the per-group `break`:
+        # a group stops updating exactly when its scales stop changing.
+        changed = (new_pos != s_pos) | (new_neg != s_neg)
+        if not changed.any():
+            break
+        s_pos = np.where(changed, new_pos, s_pos)
+        s_neg = np.where(changed, new_neg, s_neg)
+        if record_states:
+            states.append((s_pos.copy(), s_neg.copy()))
+    s_pos = np.maximum(s_pos, 1e-12)  # all-zero / one-sided group guards
+    s_neg = np.maximum(s_neg, 1e-12)
+    codes = np.zeros(wf.shape, dtype=np.int8)
+    codes[wf > t * s_pos[:, None]] = 1
+    codes[wf < -t * s_neg[:, None]] = -1
+    return s_pos, s_neg, codes.reshape(-1), states
+
+
 def _ternary_lloyd_fit(g: np.ndarray, dual: bool,
                        n_iter: int = 20,
                        thresh_factor: float = 1.0,
                        history: list | None = None) -> tuple:
-    """Constrained 1-D Lloyd for a ternary codebook.
+    """Constrained 1-D Lloyd for a ternary codebook (single group).
 
-    Fits {-s, 0, +s} (or dual-scale {-s_neg, 0, +s_pos}) to one group by
-    alternating assignment (nearest of the three codebook values, i.e.
-    thresholds at +/-thresh_factor*s/2) and refit: given the assignment,
-    the optimal symmetric s is the mean |x| over non-zero-assigned
-    weights (L2 optimality), and the dual scales are the per-side
-    conditional means. Deterministic; no random restarts. Returns
-    (s_pos, s_neg, codes).
-
-    thresh_factor > 1 widens the zero bin (threshold-biased Lloyd): the
-    fit stays L2-optimal *under the widened thresholds*, so this is the
-    honest sparse encoder. 1.0 reproduces the classic nearest-centroid
-    assignment exactly (bit-identical default).
-
-    If `history` is a list, the (s_pos, s_neg) state is appended after the
-    heuristic initialization and after every scale update, so callers can
-    decompose the fit gain step by step (used by diagnose.py).
+    Thin wrapper over _ternary_lloyd_fit_batch for one group: identical
+    signature, identical return (s_pos, s_neg, codes), and the same
+    `history` semantics (heuristic init appended, then one entry per
+    applied scale update) used by diagnose.py. Kept as the per-group
+    entry point so existing callers and tests are untouched; the batch
+    core is what the scheme functions use.
     """
-    g = g.astype(np.float64)
-    t = 0.5 * thresh_factor
-    if dual:
-        pos = g[g > 0]
-        neg = g[g < 0]
-        s_pos = float(pos.mean()) if pos.size else 0.0
-        s_neg = float(-neg.mean()) if neg.size else 0.0
-    else:
-        s_pos = s_neg = float(np.mean(np.abs(g)))
+    wf = np.asarray(g, dtype=np.float64).reshape(1, -1)
+    s_pos, s_neg, codes, states = _ternary_lloyd_fit_batch(
+        wf, dual=dual, n_iter=n_iter, thresh_factor=thresh_factor,
+        record_states=history is not None)
     if history is not None:
-        history.append((s_pos, s_neg))  # heuristic init (absmean)
-    for _ in range(n_iter):
-        a_pos = g > t * s_pos
-        a_neg = g < -t * s_neg
-        new_pos = float(g[a_pos].mean()) if a_pos.any() else s_pos
-        new_neg = float(-g[a_neg].mean()) if a_neg.any() else s_neg
-        if not dual:
-            n_assigned = a_pos.sum() + a_neg.sum()
-            if n_assigned:
-                new = (a_pos.sum() * new_pos + a_neg.sum() * new_neg) / n_assigned
-            else:
-                new = s_pos
-            new_pos = new_neg = new
-        if new_pos == s_pos and new_neg == s_neg:
-            break
-        s_pos, s_neg = new_pos, new_neg
-        if history is not None:
-            history.append((s_pos, s_neg))  # post-update state
-    s_pos = max(s_pos, 1e-12)  # all-zero / one-sided group guards
-    s_neg = max(s_neg, 1e-12)
-    codes = np.zeros(g.shape[0], dtype=np.int8)
-    codes[g > t * s_pos] = 1
-    codes[g < -t * s_neg] = -1
-    return s_pos, s_neg, codes
+        prev = None
+        for vsp, vsn in states:
+            cur = (float(vsp[0]), float(vsn[0]))
+            if cur != prev:  # belt-and-braces; snapshots only append on change
+                history.append(cur)
+            prev = cur
+    return float(s_pos[0]), float(s_neg[0]), codes
 
 
 def quantize_ternary_lloyd(w: np.ndarray, group_size: int = GROUP_SIZE,
@@ -440,15 +494,14 @@ def quantize_ternary_lloyd(w: np.ndarray, group_size: int = GROUP_SIZE,
     distribution instead of fixed at the absmean. The SQNR comparison
     against ternary_uniform at identical bitrate isolates whether Lloyd
     *fitting* rescues ternary on the fidelity axis.
+
+    Vectorized over groups via _ternary_lloyd_fit_batch (bit-identical
+    to the former per-group loop).
     """
     wp, n_groups, n = _groups(w, group_size)
-    scales = np.zeros((n_groups, 1), dtype=np.float32)
-    codes = np.zeros(n_groups * group_size, dtype=np.int8)
-    for gi in range(n_groups):
-        s_pos, _s_neg, c = _ternary_lloyd_fit(wp[gi], dual=False,
-                                              n_iter=n_iter)
-        scales[gi, 0] = np.float32(s_pos)
-        codes[gi * group_size:(gi + 1) * group_size] = c
+    s_pos, _s_neg, codes, _states = _ternary_lloyd_fit_batch(
+        wp, dual=False, n_iter=n_iter)
+    scales = s_pos.astype(np.float32).reshape(n_groups, 1)
     codes = codes[:n]
     bpw = TERNARY_PAYLOAD_BPW + _scale_overhead(1, group_size)
     return QuantResult("ternary_lloyd", codes, scales, bpw,
@@ -462,16 +515,14 @@ def quantize_ternary_lloyd_ds(w: np.ndarray, group_size: int = GROUP_SIZE,
     The asymmetric twin of ternary_lloyd: separate Lloyd-fitted scales per
     side, 1.835 bpw at group 128 - identical bitrate to dual_scale_ternary,
     so the comparison isolates fitting on skewed distributions.
+
+    Vectorized over groups via _ternary_lloyd_fit_batch (bit-identical
+    to the former per-group loop).
     """
     wp, n_groups, n = _groups(w, group_size)
-    scales = np.zeros((n_groups, 2), dtype=np.float32)
-    codes = np.zeros(n_groups * group_size, dtype=np.int8)
-    for gi in range(n_groups):
-        s_pos, s_neg, c = _ternary_lloyd_fit(wp[gi], dual=True,
-                                             n_iter=n_iter)
-        scales[gi, 0] = np.float32(s_pos)
-        scales[gi, 1] = np.float32(s_neg)
-        codes[gi * group_size:(gi + 1) * group_size] = c
+    s_pos, s_neg, codes, _states = _ternary_lloyd_fit_batch(
+        wp, dual=True, n_iter=n_iter)
+    scales = np.stack([s_pos, s_neg], axis=1).astype(np.float32)
     codes = codes[:n]
     bpw = TERNARY_PAYLOAD_BPW + _scale_overhead(2, group_size)
     return QuantResult("ternary_lloyd_ds", codes, scales, bpw,
@@ -503,15 +554,14 @@ def quantize_ternary_1step(w: np.ndarray, group_size: int = GROUP_SIZE,
     probe (threshold-biased Lloyd - the fit stays L2-optimal under the
     widened thresholds); it changes zero-rate but not bitrate, so
     widened variants compare at matched bpw.
+
+    Vectorized over groups via _ternary_lloyd_fit_batch (bit-identical
+    to the former per-group loop).
     """
     wp, n_groups, n = _groups(w, group_size)
-    scales = np.zeros((n_groups, 1), dtype=np.float32)
-    codes = np.zeros(n_groups * group_size, dtype=np.int8)
-    for gi in range(n_groups):
-        s_pos, _s_neg, c = _ternary_lloyd_fit(wp[gi], dual=False, n_iter=1,
-                                              thresh_factor=thresh_factor)
-        scales[gi, 0] = np.float32(s_pos)
-        codes[gi * group_size:(gi + 1) * group_size] = c
+    s_pos, _s_neg, codes, _states = _ternary_lloyd_fit_batch(
+        wp, dual=False, n_iter=1, thresh_factor=thresh_factor)
+    scales = s_pos.astype(np.float32).reshape(n_groups, 1)
     codes = codes[:n]
     bpw = TERNARY_PAYLOAD_BPW + _scale_overhead(1, group_size)
     return QuantResult("ternary_1step", codes, scales, bpw,
@@ -532,15 +582,14 @@ def quantize_ternary_1step_ds(w: np.ndarray, group_size: int = GROUP_SIZE,
     for the symmetric case - see ternary_1step - but the dual case is
     tested here on skewed tensors). n_iter is exposed for the
     convergence check (2-3 iterations are still O(1)).
+
+    Vectorized over groups via _ternary_lloyd_fit_batch (bit-identical
+    to the former per-group loop).
     """
     wp, n_groups, n = _groups(w, group_size)
-    scales = np.zeros((n_groups, 2), dtype=np.float32)
-    codes = np.zeros(n_groups * group_size, dtype=np.int8)
-    for gi in range(n_groups):
-        s_pos, s_neg, c = _ternary_lloyd_fit(wp[gi], dual=True, n_iter=n_iter)
-        scales[gi, 0] = np.float32(s_pos)
-        scales[gi, 1] = np.float32(s_neg)
-        codes[gi * group_size:(gi + 1) * group_size] = c
+    s_pos, s_neg, codes, _states = _ternary_lloyd_fit_batch(
+        wp, dual=True, n_iter=n_iter)
+    scales = np.stack([s_pos, s_neg], axis=1).astype(np.float32)
     codes = codes[:n]
     bpw = TERNARY_PAYLOAD_BPW + _scale_overhead(2, group_size)
     return QuantResult("ternary_1step_ds", codes, scales, bpw,

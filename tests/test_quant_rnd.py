@@ -2592,5 +2592,160 @@ class TestSensitivityMechanismGated(unittest.TestCase):
             self.assertTrue(-1.0 <= res[key] <= 1.0)
 
 
+def _reference_ternary_lloyd_fit(g, dual, n_iter=20, thresh_factor=1.0):
+    """FROZEN oracle: verbatim copy of the pre-vectorization
+    _ternary_lloyd_fit (2026-09-22), kept to pin the vectorized batch
+    core bit-identical against the old per-group float64 loop. Do NOT
+    "simplify" this to call the new code - that would make the pin
+    circular. If a future numpy changes its reduction order, these tests
+    fail loudly and the published anchor numbers get re-verified."""
+    g = g.astype(np.float64)
+    t = 0.5 * thresh_factor
+    if dual:
+        pos = g[g > 0]
+        neg = g[g < 0]
+        s_pos = float(pos.mean()) if pos.size else 0.0
+        s_neg = float(-neg.mean()) if neg.size else 0.0
+    else:
+        s_pos = s_neg = float(np.mean(np.abs(g)))
+    for _ in range(n_iter):
+        a_pos = g > t * s_pos
+        a_neg = g < -t * s_neg
+        new_pos = float(g[a_pos].mean()) if a_pos.any() else s_pos
+        new_neg = float(-g[a_neg].mean()) if a_neg.any() else s_neg
+        if not dual:
+            n_assigned = a_pos.sum() + a_neg.sum()
+            if n_assigned:
+                new = (a_pos.sum() * new_pos + a_neg.sum() * new_neg) / n_assigned
+            else:
+                new = s_pos
+            new_pos = new_neg = new
+        if new_pos == s_pos and new_neg == s_neg:
+            break
+        s_pos, s_neg = new_pos, new_neg
+    s_pos = max(s_pos, 1e-12)
+    s_neg = max(s_neg, 1e-12)
+    codes = np.zeros(g.shape[0], dtype=np.int8)
+    codes[g > t * s_pos] = 1
+    codes[g < -t * s_neg] = -1
+    return s_pos, s_neg, codes
+
+
+class TestTernaryLloydVectorized(unittest.TestCase):
+    """The vectorized ternary encoder must be bit-identical to the old
+    per-group loop (roadmap: vectorize item) - every published anchor
+    number (SQNR tables, ppl 2764/795.96, opcount zero-rates) was
+    produced by the old path."""
+
+    @classmethod
+    def setUpClass(cls):
+        rng = np.random.default_rng(20260922)
+        cls.tensors = [
+            rng.standard_normal(4096).astype(np.float32),          # clean
+            (rng.standard_normal(4096) + 0.5).astype(np.float32),  # skewed
+            np.zeros(4096, dtype=np.float32),                      # all-zero groups
+            np.abs(rng.standard_normal(4096)).astype(np.float32),  # one-sided
+            rng.standard_normal(1000).astype(np.float32),         # ragged (padding)
+            rng.standard_normal(37).astype(np.float32),           # single padded group
+        ]
+
+    def _reference_assembled(self, w, dual, n_iter, thresh_factor,
+                             group_size):
+        wp, n_groups, n = _groups(w, group_size=group_size)
+        scales = np.zeros((n_groups, 2 if dual else 1), dtype=np.float32)
+        codes = np.zeros(n_groups * group_size, dtype=np.int8)
+        for gi in range(n_groups):
+            sp, sn, c = _reference_ternary_lloyd_fit(
+                wp[gi], dual=dual, n_iter=n_iter,
+                thresh_factor=thresh_factor)
+            scales[gi, 0] = np.float32(sp)
+            if dual:
+                scales[gi, 1] = np.float32(sn)
+            codes[gi * group_size:(gi + 1) * group_size] = c
+        return codes[:n], scales
+
+    def test_batch_core_bit_identical(self):
+        from src.quant_rnd.schemes import _ternary_lloyd_fit_batch
+        for dual in (False, True):
+            for n_iter in (1, 2, 20):
+                for thresh_factor in (1.0, 1.2):
+                    for gs in (64, 128, 256):
+                        for w in self.tensors:
+                            wp, n_groups, n = _groups(w, group_size=gs)
+                            sp, sn, codes, _st = _ternary_lloyd_fit_batch(
+                                wp, dual=dual, n_iter=n_iter,
+                                thresh_factor=thresh_factor)
+                            ref_codes, ref_scales = self._reference_assembled(
+                                w, dual, n_iter, thresh_factor, gs)
+                            tag = (f"dual={dual} n_iter={n_iter} "
+                                   f"tf={thresh_factor} gs={gs}")
+                            np.testing.assert_array_equal(
+                                codes[:n], ref_codes,
+                                err_msg=f"codes {tag}")
+                            got = np.stack([sp, sn], axis=1)[:, :2 if dual else 1]
+                            np.testing.assert_array_equal(
+                                got.astype(np.float32), ref_scales,
+                                err_msg=f"scales {tag}")
+
+    def test_scheme_functions_bit_identical(self):
+        # The four public scheme entry points route through the batch
+        # core; pin their full QuantResults against the frozen reference.
+        configs = [
+            (quantize_ternary_lloyd, False, 20, 1.0),
+            (quantize_ternary_lloyd_ds, True, 20, 1.0),
+            (quantize_ternary_1step, False, 1, 1.0),
+            (quantize_ternary_1step_ds, True, 1, 1.0),
+        ]
+        for fn, dual, n_iter, tf in configs:
+            for w in self.tensors:
+                q = fn(w)
+                ref_codes, ref_scales = self._reference_assembled(
+                    w, dual, n_iter, tf, 128)
+                np.testing.assert_array_equal(q.codes, ref_codes,
+                                              err_msg=fn.__name__)
+                np.testing.assert_array_equal(q.scales, ref_scales,
+                                              err_msg=fn.__name__)
+
+    def test_sparse_variant_bit_identical(self):
+        q = SCHEMES["ternary_1step_sp"](self.tensors[0])
+        ref_codes, ref_scales = self._reference_assembled(
+            self.tensors[0], False, 1, 1.2, 128)
+        np.testing.assert_array_equal(q.codes, ref_codes)
+        np.testing.assert_array_equal(q.scales, ref_scales)
+
+    def test_single_group_wrapper_matches_batch(self):
+        # _ternary_lloyd_fit is now a thin wrapper over the batch core:
+        # same outputs as the batch on one group, and the history hook
+        # used by diagnose.py still records the absmean init first.
+        from src.quant_rnd.schemes import _ternary_lloyd_fit_batch
+        for dual in (False, True):
+            for tf in (1.0, 1.2):
+                wp, _ng, _n = _groups(self.tensors[1], group_size=128)
+                g = wp[3]
+                h = []
+                sp, sn, codes = _ternary_lloyd_fit(
+                    g, dual=dual, thresh_factor=tf, history=h)
+                bsp, bsn, bcodes, _st = _ternary_lloyd_fit_batch(
+                    g.reshape(1, -1), dual=dual, thresh_factor=tf)
+                self.assertEqual(sp, float(bsp[0]))
+                self.assertEqual(sn, float(bsn[0]))
+                np.testing.assert_array_equal(codes, bcodes)
+                self.assertGreaterEqual(len(h), 1)
+                g64 = g.astype(np.float64)
+                if not dual:
+                    self.assertAlmostEqual(h[0][0],
+                                           float(np.mean(np.abs(g64))),
+                                           places=9)
+                    self.assertAlmostEqual(h[0][1], h[0][0], places=9)
+                else:
+                    # Dual init: per-side conditional means, not absmean.
+                    pos = g64[g64 > 0]
+                    neg = g64[g64 < 0]
+                    self.assertAlmostEqual(h[0][0], float(pos.mean()),
+                                           places=9)
+                    self.assertAlmostEqual(h[0][1], float(-neg.mean()),
+                                           places=9)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -971,13 +971,29 @@ measuring where quality actually breaks.
       — the conditional (miss after tuning ladder) never fired and the
       fallbacks are moot. If rung-2 quality (not speed) ever becomes the
       question, the ladder moves up to rung 3, not sideways.
-- [ ] Quant R&D: vectorize the ternary Lloyd-fit encoder — currently a
-      pure-Python per-group loop at ~2 Mparams/s (full-model
-      ternary_1step ≈ 45 s, ternary_lloyd n_iter=20 ≈ 2 min). The
-      2026-09-21 reconstruct fix (O(n^2) -> O(n), 1000x) unblocked the
-      step-2b sweep; the encoder is now the dominant cost per scheme.
-      Careful: keep bit-identical numerics vs the per-group float64 path
-      (pin with a test), or document any intentional deviation.
+- [x] Quant R&D: vectorize the ternary Lloyd-fit encoder — LANDED
+      2026-09-22 as `_ternary_lloyd_fit_batch` in schemes.py (whole-array
+      numpy ops over all groups, per-group early exit preserved). Measured
+      on 2M params: ternary_1step 81 ms (**24.7 vs 2.8 Mparams/s**, 8.8x),
+      ternary_lloyd n_iter=20 600 ms (3.3 vs 0.8 Mparams/s, 4.4x),
+      1step_ds 15.9 Mparams/s (5.4x), lloyd_ds 3.5 Mparams/s (3.1x).
+      Bit-identical numerics vs the old per-group float64 path, pinned by
+      test against a FROZEN copy of the old loop (dual T/F, n_iter 1/2/20,
+      thresh_factor 1.0/1.2, group sizes 64/128/256, incl. all-zero,
+      one-sided, and ragged/padded edge tensors) — every published anchor
+      number (SQNR tables, ppl 2764/795.96, opcount zero-rates) reproduces
+      exactly; diagnose.py's +1.47 dB decomposition re-verified. The old
+      `_ternary_lloyd_fit` is now a thin 1-group wrapper (same signature,
+      same history semantics for diagnose.py). 419 tests green.
+
+- [ ] Quant R&D: vectorize `_lloyd_1d` (the int2_kmeans/int2_kmeans_q8
+      per-group loop) the same way the ternary encoder was vectorized
+      2026-09-22 — it is now the remaining pure-Python per-group encoder
+      bottleneck. Harder to keep bit-identical (argmin of weighted
+      distances per group); the frozen-oracle pin pattern from the
+      ternary work applies. Only worth it if a future experiment needs
+      many k-means re-fits (the fidelity thread that needed them is
+      closed, so this is opportunistic). (NEW 2026-09-22)
 
 ## Ground rules for this research track
 
