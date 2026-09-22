@@ -30,15 +30,17 @@ backend: "ollama"
 #  # small: defaults to the ollama block above; override to use llamacpp:
 #  # small: {backend: ollama, ollama: {host: http://localhost:11434, model: qwen3:4b}}
 #  big:
-#    backend: llamacpp
-#    llamacpp: {model_path: ~/.hearth/models/qwen3.5-35b-a3b-iq2_m.gguf}
+#    backend: ollama
+#    ollama: {host: http://localhost:11434, model: qwen35-35b-a3b-full}
 
 ollama:
   host: "http://localhost:11434"
   # Pick a model that fits comfortably in 16 GB unified memory.
-  #   qwen3:8b      ~5.2 GB  — best all-round pick, good tool use
-  #   llama3.1:8b   ~4.9 GB  — solid alternative
-  #   qwen3:4b      ~2.6 GB  — if you need RAM headroom for heavy apps
+  #   qwen3:8b            ~5.2 GB  — best all-round pick, good tool use
+  #   qwen35-35b-a3b-full ~11 GB   — validated rung 3 (2026-09-21): the
+  #                                  smartest model that fits; ~28 tok/s
+  #   llama3.1:8b         ~4.9 GB  — solid alternative
+  #   qwen3:4b            ~2.6 GB  — if you need RAM headroom for heavy apps
   model: "qwen3:8b"
   temperature: 0.6
   # Context window. 16384 is a safe default; raise to 32768 if you

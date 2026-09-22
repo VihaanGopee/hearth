@@ -1,11 +1,38 @@
-"""Optional browser automation via Playwright.
+"""Browser automation via Playwright, with a persistent profile.
 
 Install with: pip install playwright && playwright install chromium
 If Playwright isn't installed this module registers nothing.
+
+The browser uses a persistent profile directory so cookies and logins
+survive between sessions. That is the whole anti-detection story: a
+returning, logged-in user in a real Chromium does not look like a bot.
+There is no fingerprint spoofing here — just calm, low-volume browsing.
+
+Profile location: <data_dir>/browser-profile by default, overridable with
+HEARTH_BROWSER_PROFILE. Set HEARTH_BROWSER_HEADED=1 to show the window
+(macOS) so the user can watch or take over — e.g. to solve a captcha
+by hand, which is the honest answer to captchas no model can beat.
 """
 from __future__ import annotations
+import base64
 import json
+import os
+from pathlib import Path
 from .registry import register_tool
+
+
+def profile_dir(ctx: dict) -> Path:
+    override = os.environ.get("HEARTH_BROWSER_PROFILE")
+    if override:
+        return Path(override).expanduser()
+    data_dir = ctx.get("data_dir")
+    if data_dir:
+        return Path(data_dir) / "browser-profile"
+    return Path.home() / ".hearth" / "browser-profile"
+
+
+def headed() -> bool:
+    return os.environ.get("HEARTH_BROWSER_HEADED", "0") == "1"
 
 
 def register(ctx: dict) -> None:
@@ -14,13 +41,20 @@ def register(ctx: dict) -> None:
     except ImportError:
         return
 
-    state: dict = {"pw": None, "browser": None, "page": None}
+    state: dict = {"pw": None, "context": None, "page": None}
 
     def _page():
         if state["page"] is None:
+            profile = profile_dir(ctx)
+            profile.mkdir(parents=True, exist_ok=True)
             state["pw"] = sync_playwright().start()
-            state["browser"] = state["pw"].chromium.launch(headless=True)
-            state["page"] = state["browser"].new_page()
+            # Persistent context: cookies/logins survive restarts, and the
+            # browser presents as an ordinary returning user.
+            state["context"] = state["pw"].chromium.launch_persistent_context(
+                str(profile),
+                headless=not headed(),
+            )
+            state["page"] = state["context"].new_page()
         return state["page"]
 
     def browser_open(url: str):
@@ -51,16 +85,23 @@ def register(ctx: dict) -> None:
             p.wait_for_timeout(1500)
         return {"ok": True, "url": p.url}
 
+    def browser_screenshot(full_page: bool = False):
+        """Capture a PNG screenshot (base64) — the future 'eyes' hook."""
+        p = _page()
+        png = p.screenshot(full_page=full_page)
+        return {"ok": True, "url": p.url,
+                "png_base64": base64.b64encode(png).decode("ascii")}
+
     def browser_close():
-        if state["browser"]:
-            state["browser"].close()
+        if state["context"]:
+            state["context"].close()
         if state["pw"]:
             state["pw"].stop()
-        state.update(pw=None, browser=None, page=None)
+        state.update(pw=None, context=None, page=None)
         return {"ok": True}
 
     register_tool(
-        "browser_open", "Open a URL in a headless browser.",
+        "browser_open", "Open a URL in Chromium (persistent profile: stays logged in).",
         {"properties": {"url": {"type": "string"}}, "required": ["url"]},
         browser_open)
     register_tool(
@@ -79,5 +120,9 @@ def register(ctx: dict) -> None:
          "required": ["selector", "text"]},
         browser_type)
     register_tool(
-        "browser_close", "Close the headless browser.",
+        "browser_screenshot", "Capture a PNG screenshot of the page (base64).",
+        {"properties": {"full_page": {"type": "boolean"}}, "required": []},
+        browser_screenshot)
+    register_tool(
+        "browser_close", "Close the browser.",
         {"properties": {}, "required": []}, browser_close)
