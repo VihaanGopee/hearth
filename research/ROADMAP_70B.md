@@ -457,7 +457,11 @@ measuring where quality actually breaks.
       any quality evaluation. RE-SURVEYED 2026-09-21 (pm session): still
       nothing — TQ1_0 hits are the same 397B oddity
       (Anjielon/ODINO-397B-v34a-TQ1_0) plus unrelated small repos; TQ2_0
-      hits are all non-GGUF noise. Item stays WATCH.
+      hits are all non-GGUF noise. RE-SURVEYED 2026-09-22 (am): still nothing
+      >=70B — TQ1_0 hits unchanged; the TQ2_0 ecosystem is visibly maturing
+      at small scale (TriLM, Ternary-Bonsai, ERNIE-4.5-VL-28B-A3B-TQ1_0/TQ2_0,
+      Gemma3-27B-TQ2_0, bitnet-family TQ2_0 conversions) — real tooling
+      love for the format, but no 70B file. Item stays WATCH.
 - [ ] Verify Ollama's Metal kernel path for TQ1_0/TQ2_0 quants on the Mac
       (type support confirmed at llama.cpp b10969; whether ternary matmuls
       take an optimized path or a slow fallback on Apple Silicon is
@@ -619,7 +623,10 @@ measuring where quality actually breaks.
       (2.4B, 4T tokens); an independent 2026 well-trained-models survey
       (updated ~2026-09-16) finds no announced or in-progress 7B+ 1.58-bit
       model with 1T+ tokens expected in 2026, and microsoft/BitNet's
-      "model-release" issues are empty. Re-check periodically.)
+      "model-release" issues are empty. SWEEP 2026-09-22 (am): still nothing —
+      microsoft/BitNet's largest public model remains BitNet-b1.58-2B-4T
+      (2.4B, 4T tokens); the supported-model ceiling is still ~2-8B ternary.
+      Avenue-A trigger not hit. Re-check periodically.)
 - [ ] Track oQ/JANG releases and 2-bit MoE quality reports (SWEEP
       2026-09-21 pm: vmlx README (updated ~2026-09-17) adds an explicit
       JANG profile table, Smelt benchmarks unchanged, and a new
@@ -627,8 +634,39 @@ measuring where quality actually breaks.
       use it when converting locally. oMLX 0.6.4 allows TurboQuant KV
       cache + Lightning MTP together — relevant to the MTP speculative
       path. MiniMax-M2.5 JANG_2L datapoint: 74% MMLU at 82.5 GB vs 26.5%
-      for standard MLX 4-bit at 119.8 GB (author-reported). Re-check
+      for standard MLX 4-bit at 119.8 GB (author-reported). SWEEP
+      2026-09-22 (am): vmlx has moved orgs (vink-ai -> jjang-ai/vmlx);
+      Smelt benchmarks unchanged. JANGQ-AI is very active — new
+      Qwen3.8-Flash-Next JANG 4S/4M/6S uploads (1.3-1.7k downloads) and
+      Qwen3.6-35B-A3B JANGTQ4 (19.71 GB) / JANG_4K (19.67 GB) — 4-bit-ish
+      profiles, too big to matter. Jundot: Qwen3.6-35B-A3B oQ3e-mtp
+      (17.23 GB, 2026-07-02) and oQ4e-mtp (21.64 GB) — both larger than
+      the rung-4 pick (oQ2, 13.10 GB), so they don't improve the fit
+      story; the -mtp variants carry the MTP head the oQ2 weights lack.
+      NEW ecosystem players this sweep (items below): ddalcu/mlx-serve,
+      novamlx (MoE-aware SSD streaming), mlxl3 (EXL3 on MLX). Re-check
       periodically.)
+- [ ] Track: novamlx (cnshsliu/novamlx) — NEW 2026-09-22: pure-Swift
+      Mac-native LLM server with NovaMLX-TIE, a 3-tier (wired / LRU /
+      SSD-mmap) inference engine with MoE-aware router-driven expert
+      prefetch and per-expert LRU — architecturally a smarter Smelt for
+      the 13.1 GB oQ2 on 16 GB (dynamic prefetch vs vmlx Smelt's fixed
+      expert subset + routing bias). Compare resident RAM, decode tok/s,
+      and quality head-to-head with vmlx --smelt 50 when the rung-4
+      validation runs. (SWEEP 2026-09-22)
+- [ ] Track: ddalcu/mlx-serve (MLX Core.app) — NEW 2026-09-22: Mac-native
+      MLX server speaking the Ollama API (/api/chat, /api/generate,
+      /api/tags) alongside OpenAI/Anthropic — Hearth's existing ollama
+      backend could drive it unchanged, and it needs no custom oQ2/JANG
+      format (runs standard MLX quants). MLX 0.32.2, Qwen 3.8 Flash
+      Next support. Evaluate as the rung-4 transport if vmlx Smelt
+      quality disappoints, and as the mlx_lm.server alternative for the
+      MLX tool-calling follow-up. (SWEEP 2026-09-22)
+- [ ] Track: mlxl3 (0xZKnw/mlxl3) — NEW 2026-09-22: EXL3
+      inference/conversion engine on MLX with JIT Metal kernels and
+      CPU-vs-Metal conformance tests at every bit width 1-8. EXL3 is a
+      new format family on the Mac side; watch for a sub-2-bit EXL3
+      35B-A3B / 70B-class upload that fits the budget. (SWEEP 2026-09-22)
 - [ ] Quant R&D: JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S candidate — NEW
       2026-09-21 (pm sweep): prebuilt MLX JANG 2-bit for OUR rung-3
       model. Measured **11.67 GB** via HF tree API — but the model card
@@ -824,8 +862,18 @@ measuring where quality actually breaks.
       x_fp32 = 15.67. Verdict: the 795.96 anchor is text-conditioned and
       is now quoted as 676 +/- 288; both hand-composed texts fall within
       one std. Much of the spread is inherited text difficulty (fp32
-      spans 2.8x), with scheme x text interaction on top. Follow-up kept
-      open (low): g256-on-blocks slice to tighten the group-size verdict.
+      spans 2.8x), with scheme x text interaction on top. Follow-up
+      CLOSED 2026-09-22 (am session): g256-on-blocks slice ran
+      (int2_kmeans_q8 @ 2.188 bpw, same 8 blocks, seed 7): mean
+      778.90 +/- 290.38 (range 225.83-1308.73) vs g128's 676.49 +/-
+      288.18 — g128 still wins on the block distribution (x_fp32 15.67
+      vs 18.04). Honest caveat: the 102.4 mean gap sits inside the
+      standard error of the difference (~145), so blocks alone are not
+      significant — but this is now the THIRD independent datum with
+      the same sign (text1: 795.96 vs 1085.61; text2: 1047.35 vs
+      1971.77), all in collapse territory, all directional. The
+      g128-beats-g256 verdict is as tightened as it will get; no further
+      slices planned.
 - [x] Quant R&D: re-run the default (non-Lloyd) ternary sweep on
       eval_text2 via `--eval-texts` — PARTIALLY ANSWERED 2026-09-21
       (3-scheme slice: the 1.710-bpw fitted-vs-naive tiering question).
