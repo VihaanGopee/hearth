@@ -123,18 +123,18 @@ class TestRung3RecipeNumbers(unittest.TestCase):
 
 
 class TestRung4RecipeNumbers(unittest.TestCase):
-    """research/recipes/RUNG4_oq2_35b_smelt.md."""
+    """research/recipes/RUNG4_jang2s_35b_smelt.md."""
 
     def _estimate(self, n_ctx, cache_type):
-        r = estimate(35.0, "q4_k_m", n_ctx, arch="qwen3.6-35b-a3b",
+        r = estimate(35.0, "q4_k_m", n_ctx, arch="qwen3.5-35b-a3b",
                      cache_type=cache_type)
         self.assertTrue(r["ok"], r.get("error"))
         return r
 
     def test_arch_entry_kv_2048_f16(self):
-        # Same hybrid skeleton as 3.5: GQA-2 KV heads, head_dim 256, only
-        # the 10 full-attention layers carry KV (full_attention_interval=4
-        # in the Jundot oQ2 config.json text_config, 2026-09-21).
+        # 3.5 skeleton: GQA-2 KV heads, head_dim 256, only the 10
+        # full-attention layers carry KV (full_attention_interval=4;
+        # same geometry as the 3.6 measured 2026-09-21).
         r = self._estimate(2048, "f16")
         self.assertAlmostEqual(r["kv_cache_gb"], 0.04, delta=0.03)
 
@@ -144,36 +144,37 @@ class TestRung4RecipeNumbers(unittest.TestCase):
             moe_expert_gb(40, 256, 2048, 512, 2.0), 8.05, delta=0.05)
 
     def test_smelt_resident_50(self):
-        # Measured total 13.10 GB; backbone = 13.10 - 8.05 = 5.05 GB;
-        # smelt-50 pages half the routed experts.
-        s = smelt_resident(13.10, 8.05, 0.5)
+        # Measured text-only total 10.75 GB (Smelt disables VLM mode, the
+        # 0.89 GB vision tower is not loaded); backbone = 10.75 - 8.05 =
+        # 2.70 GB; smelt-50 pages half the routed experts.
+        s = smelt_resident(10.75, 8.05, 0.5)
         self.assertTrue(s["ok"], s.get("error"))
-        self.assertAlmostEqual(s["backbone_gb"], 5.05, delta=0.05)
+        self.assertAlmostEqual(s["backbone_gb"], 2.70, delta=0.05)
         self.assertAlmostEqual(s["resident_experts_gb"], 4.03, delta=0.05)
-        self.assertAlmostEqual(s["resident_gb"], 9.07, delta=0.10)
+        self.assertAlmostEqual(s["resident_gb"], 6.72, delta=0.10)
 
     def test_smelt_resident_25(self):
-        s = smelt_resident(13.10, 8.05, 0.25)
+        s = smelt_resident(10.75, 8.05, 0.25)
         self.assertTrue(s["ok"], s.get("error"))
-        self.assertAlmostEqual(s["resident_gb"], 7.06, delta=0.10)
+        self.assertAlmostEqual(s["resident_gb"], 4.71, delta=0.10)
 
     def test_smelt_rejects_bad_frac(self):
-        self.assertFalse(smelt_resident(13.10, 8.05, 0.0)["ok"])
-        self.assertFalse(smelt_resident(13.10, 8.05, 1.5)["ok"])
-        self.assertFalse(smelt_resident(8.05, 13.10, 0.5)["ok"])
+        self.assertFalse(smelt_resident(10.75, 8.05, 0.0)["ok"])
+        self.assertFalse(smelt_resident(10.75, 8.05, 1.5)["ok"])
+        self.assertFalse(smelt_resident(8.05, 10.75, 0.5)["ok"])
 
     def test_total_smelt50_fits_budget(self):
-        # Recipe: ~10.1 GB total @ smelt-50 (9.07 resident weights + 0.04
-        # KV @ 2048 f16 + ~1.0 runtime) — inside the ~11 GB usable budget.
+        # Recipe: ~7.8 GB total @ smelt-50 (6.72 resident weights + 0.04
+        # KV @ 2048 f16 + ~1.0 runtime) — comfortably inside ~11 GB.
         kv = self._estimate(2048, "f16")["kv_cache_gb"]
-        s = smelt_resident(13.10, 8.05, 0.5)
+        s = smelt_resident(10.75, 8.05, 0.5)
         total = s["resident_gb"] + kv + 1.0
         self.assertLess(total, 11.0)
-        self.assertAlmostEqual(total, 10.1, delta=0.3)
+        self.assertAlmostEqual(total, 7.8, delta=0.3)
 
     def test_recipe_file_exists(self):
         self.assertTrue(
-            os.path.isfile(os.path.join(RECIPES, "RUNG4_oq2_35b_smelt.md")))
+            os.path.isfile(os.path.join(RECIPES, "RUNG4_jang2s_35b_smelt.md")))
 
 
 class TestRecipeConsistency(unittest.TestCase):
@@ -192,7 +193,7 @@ class TestRecipeConsistency(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(RECIPES, "RUNG1_qwen3_8b_20tps.md")))
         self.assertTrue(os.path.isfile(os.path.join(RECIPES, "RUNG2_qwen3_14b_20tps.md")))
         self.assertTrue(os.path.isfile(os.path.join(RECIPES, "RUNG3_qwen3_5_35b_a3b_moe.md")))
-        self.assertTrue(os.path.isfile(os.path.join(RECIPES, "RUNG4_oq2_35b_smelt.md")))
+        self.assertTrue(os.path.isfile(os.path.join(RECIPES, "RUNG4_jang2s_35b_smelt.md")))
 
 
 class TestModelProfiles(unittest.TestCase):
@@ -221,7 +222,7 @@ class TestModelProfiles(unittest.TestCase):
 
     def test_profiles_have_known_backends(self):
         for p in self._profiles():
-            self.assertIn(p["backend"], ("ollama", "llamacpp", "mlx", "bitnet.cpp"),
+            self.assertIn(p["backend"], ("ollama", "llamacpp", "mlx", "bitnet.cpp", "openai"),
                           p["name"])
 
 

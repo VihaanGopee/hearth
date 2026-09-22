@@ -92,13 +92,33 @@ profiles:
       group 64, MLX safetensors). 13.10 GB MEASURED 2026-09-21 via the
       HF tree API (repo Jundot/Qwen3.6-35B-A3B-oQ2, uploaded 2026-04-23;
       corrects the stale 8.8 GB estimate). Over the ~11 GB usable budget
-      fully resident — the fit story is vmlx --smelt 50 (~10.1 GB
-      resident est., needs Mac-side measurement). Best-benchmarked ~2-bit
+      fully resident. The 2026-09-21 rung-4 plan (vmlx --smelt 50) is
+      INVALID — code-verified 2026-09-22: Smelt requires JANG-format
+      models and vmlx ships no oQ loader. Best-benchmarked ~2-bit
       quality: 64% MMLU vs 14% naive (oMLX docs; measured on the 3.5
-      variant — the 3.6 variant is unmeasured). Rung-4 ladder candidate:
-      recipe at research/recipes/RUNG4_oq2_35b_smelt.md. Requires vmlx
-      (OpenAI-compatible serve); Hearth's `mlx` backend cannot load the
-      oQ2 affine format.
+      variant — the 3.6 variant is unmeasured). On the watch list: if
+      vmlx ever ships an oQ loader, or JANGQ-AI ships a JANG-format 3.6
+      at ~2-bit, it becomes a rung-4 candidate again. Hearth's `mlx`
+      backend cannot load the oQ2 affine format.
+
+  - name: qwen3.5-35b-a3b-JANG_2S
+    params_b: 35
+    quant: JANG-mixed-2bit
+    est_gb: 11.65
+    backend: openai
+    status: experimental
+    notes: >
+      Prebuilt JANG 2-bit MLX quant of Qwen3.5-35B-A3B
+      (repo JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S). 11.65 GB MEASURED
+      2026-09-22 via safetensors-header probe (10.75 GB text + 0.89 GB
+      vision; mixed 2/4/6-bit, 2.17 bpw actual per jang_config.json).
+      Card claims 65.5% MMLU (200-question subset, author-reported) vs
+      ~20% naive MLX 2-bit. JANG profile confirmed in vmlx source
+      (HYBRID_JANG_PROFILES) — Smelt-eligible: smelt-50 -> ~7.8 GB
+      resident, smelt-25 -> ~5.8 GB (fitcheck, text-only). Rung-4 ladder
+      candidate: recipe at research/recipes/RUNG4_jang2s_35b_smelt.md.
+      Served by vmlx (or MLX Studio Server mode) over OpenAI-compatible
+      HTTP; Hearth drives it via `backend: openai`.
 
   - name: qwen3-30b-a3b-Q3_K_M
     params_b: 30

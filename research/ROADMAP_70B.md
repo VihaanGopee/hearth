@@ -731,7 +731,7 @@ measuring where quality actually breaks.
       hybrid), not the 35B-A3B MoE; at 2.00 bpw a 27B is ~6.75 GB, which
       fits — a 35B-A3B EXL3 ~2bpw upload would be ~9 GB and inside the
       budget. Watch item stands, transport question added. (NEW 2026-09-22)
-- [ ] Quant R&D: JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S candidate — NEW
+- [x] Quant R&D: JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S candidate — NEW
       2026-09-21 (pm sweep): prebuilt MLX JANG 2-bit for OUR rung-3
       model. Measured **11.67 GB** via HF tree API — but the model card
       claims 65.5% MMLU at **9.0 GB** (200-question subset, author-reported;
@@ -762,6 +762,14 @@ measuring where quality actually breaks.
       Mac-side: run our battery (not their MMLU claim), compare vs
       IQ2_XXS GGUF rung-3 and oQ2 rung-4. This is the leading
       rung-3 fallback if IQ2_XXS quality disappoints.
+      PROMOTED 2026-09-22: this is now the RUNG-4 PICK (not a fallback).
+      The oQ2+Smelt plan was invalidated by code check (Smelt is
+      JANG-only; no oQ loader in vmlx), and JANGTQ+Smelt raises an
+      explicit vmlx#81 error — JANG_2S is the only ~2-bit 35B-A3B upload
+      that is both Smelt-eligible (JANG profile, confirmed in vmlx
+      source) and inside the budget under Smelt (~7.8 GB @ smelt-50).
+      Recipe: research/recipes/RUNG4_jang2s_35b_smelt.md; the Mac-side
+      validation item above is its execution half.
 - [ ] Quant R&D: JANGQ-AI/Qwen3.6-35B-A3B-JANGTQ candidate — NEW
       2026-09-21 (pm sweep): "TurboQuant" codebook 2-bit routed experts
       (Lloyd-Max + Hadamard rotation, no dequant at inference) with
@@ -805,23 +813,35 @@ measuring where quality actually breaks.
       author-stated, unmeasured. Our battery (vs oQ2 / IQ2_XXS) is the
       arbiter. The rung-3-fallback budget picture is now complete to the
       same granularity as JANG_2S.
-- [ ] Mac-side: verify whether vmlx parses the JANGTQ mxtq/TurboQuant
-      layout — JANGTQ's only sub-16GB path is Smelt or the jang_tools
-      loader, and vmlx documents JANG profiles (JANG_2M/2L/3M/4M/6M),
-      not mxtq. DOC CHECK 2026-09-22 (README, jjang-ai/vmlx): the JANG
-      Profiles section lists ONLY JANG_2M/2L/3M/4M/6M (attn 8-bit,
-      embeds 3-6-bit, MLP 2-6-bit) — no mxtq, no JANGTQ, no TurboQuant
-      mention anywhere; Smelt "requires an MoE model in JANG format"
-      and is "not compatible with ... non-JANG formats". Default
-      assumption is now: vmlx does NOT parse the mxtq layout — JANGTQ
-      stays jang-tools-only (load_jangtq_model, no Smelt paging) until a
-      Mac-side test proves otherwise. If vmlx can't serve it, the
-      fallback ladder for JANGTQ is jang_tools-only. Check on the Mac
-      before any JANGTQ validation attempt. (NEW 2026-09-22)
+- [x] Mac-side: verify whether vmlx parses the JANGTQ mxtq/TurboQuant
+      layout — ANSWERED 2026-09-22 by CODE CHECK (not just the README):
+      **vmlx DOES serve JANGTQ.** `vmlx_engine/loaders/load_jangtq.py`
+      re-exports `jang_tools.load_jangtq.load_jangtq_model`, bundled in
+      vMLX's Python runtime; the panel UI parses `weight_format: mxtq`
+      (`jangQuantization.ts`). This CORRECTS the 2026-09-22 README-only
+      read that said "vmlx does NOT parse the mxtq layout" — the README's
+      JANG Profiles section is stale relative to the code. BUT: `--smelt`
+      on JANGTQ raises an explicit error (vmlx#81 guard in
+      `vmlx_engine/utils/smelt_loader.py`): JANGTQ's custom
+      TurboQuantLinear modules (tq_packed + tq_norms + codebook + signs)
+      cannot be subset by the Smelt patches. JANGTQ is
+      **fully-resident-only**: 10.74 GB text-only + ~1 GB runtime + KV ≈
+      12 GB > ~11 GB budget. The JANGTQ rung-3 fallback is therefore
+      DOWNGRADED to effectively dead on 16 GB (a Mac-side resident-RAM
+      measurement could still surprise, but the budget math says no).
+      Also resolved from the same code read: `JANG_2S` IS a JANG profile
+      (`HYBRID_JANG_PROFILES` in
+      `panel/src/renderer/src/lib/jangCompat.ts`) — the README profile
+      list (2M/2L/3M/4M/6M) was incomplete; JANG_2S is Smelt-eligible,
+      which is what makes it the rung-4 pick below.
       against our own opcount/SQNR numbers. NOTE 2026-09-22: the vmlx
-      org also ships jjang-ai/mlxstudio, a Mac app with first-class
-      JANG-format support (per its README) — a GUI alternative to the
-      jang-tools loader path for evaluating these two JANG candidates.
+      org also ships jjang-ai/mlxstudio, a Mac app wrapping the vmlx
+      server (its build clones github.com/jjang-ai/vmlx — SAME format
+      support and Smelt behavior, not a separate engine). Signed +
+      notarized DMG, macOS 14+ (M1 OK), no-terminal install; its Server
+      mode exposes the same OpenAI-compatible API, so Hearth's `openai`
+      backend can drive it. It is the GUI path for the JANG_2S rung-4
+      run, but NOT a JANGTQ-Smelt path (same vmlx#81 error applies).
 - [ ] Watch: Nemotron-3-Nano-Omni-30B-A3B-JANGTQ2 (JANGQ-AI, 0 downloads
       2026-09-21) — a NEW 30B-A3B MoE family with the JANGTQ2 format;
       if quality reports appear, evaluate as a 35B-A3B alternative at
@@ -890,11 +910,35 @@ measuring where quality actually breaks.
       measured, with the real repo id and the Smelt fit story in notes.
       A test (`TestModelProfiles.test_oq2_profile_size_measured`) pins the
       measured figure so the profile can't silently drift again.
-- [ ] Mac-side: Jundot oQ2 (13.1 GB) under vmlx --smelt 50 — measure
-      resident RAM, decode tok/s, and quality (MMLU subset) on Justin's
-      M1 Pro; check whether quality tracks the oQ2 64% MMLU baseline or
-      degrades from the resident-expert routing bias. If IQ2_XXS quality
-      disappoints on rung 3, this is the first fallback path.
+- [x] Mac-side: Jundot oQ2 (13.1 GB) under vmlx --smelt 50 — SUPERSEDED
+      2026-09-22: the plan was INVALID. Code check of jjang-ai/vmlx main
+      shows Smelt requires a JANG-format model (README: "Smelt requires
+      an MoE model in JANG format. Not compatible with ... non-JANG
+      formats") and vmlx ships NO oQ loader (loaders: jang / jangtq /
+      laguna / mistral3 / zaya / qwen4_exp / dsv4). The oQ2 weights are oQ
+      (oMLX affine 2-bit), not JANG — `--smelt` on them is unsupported
+      and serving them under vmlx is unverified. The oQ2 weights stay on
+      the watch list (if vmlx ever ships an oQ loader, or JANGQ-AI ships
+      a JANG-format 3.6 at ~2-bit, the recipe gets a second candidate),
+      but the rung-4 pick is now JANG_2S (below).
+- [ ] Mac-side: JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S under vmlx --smelt 50 —
+      the rung-4 validation (recipe:
+      research/recipes/RUNG4_jang2s_35b_smelt.md). Serve
+      `JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S` straight from the HF repo id
+      (`pip install "vmlx[jang]"`; GUI alternative: MLX Studio Server
+      mode). JANG_2S is a confirmed JANG profile in the vmlx source
+      (HYBRID_JANG_PROFILES) so Smelt applies; Smelt disables VLM mode,
+      served text-only (10.75 GB). Expected resident: smelt-50 → 6.72 GB
+      weights, ~7.8 GB total (fitcheck); smelt-25 → 4.71 GB, ~5.8 GB.
+      Measure: resident RAM (Activity Monitor, green pressure no swap),
+      decode tok/s via tools/measure_openai.py (--base-url
+      http://localhost:8000, target 10), quality sanity, then the
+      19-prompt battery (tools/eval_battery_openai.py) vs rung 3's
+      recorded scorecard (15/19 nominal, ~17/19 effective). Same-base-model
+      comparison (both 3.5): any delta is the quant + Smelt routing bias,
+      not the weights. If smelt-50 quality disappoints, re-run smelt-75
+      before concluding anything about the quant (routing bias vs quant
+      are two variables). (NEW 2026-09-22 — replaces the oQ2 item)
 - [ ] Quant R&D: vmlx "Smelt" mode (partial expert loading) — NEW 2026-09-21
       from the JANG release watch: vmlx README documents `--smelt` /
       `--smelt-experts N` for MoE models that don't fit in RAM - keeps the
@@ -1182,6 +1226,30 @@ measuring where quality actually breaks.
       ternary work applies. Only worth it if a future experiment needs
       many k-means re-fits (the fidelity thread that needed them is
       closed, so this is opportunistic). (NEW 2026-09-22)
+- [ ] Mac-side experiment: local JANG_2L conversion — vmlx documents
+      JANG conversion with `--calibration-method activations` ("better at
+      2-3 bit", from the 2026-09-21 pm sweep) and MLX Studio ships
+      conversion tooling. Converting the bf16 35B-A3B source (~70 GB
+      download on the Mac) to JANG_2L locally would produce a native
+      2-bit JANG with full Smelt support for EITHER the 3.5 or the 3.6
+      variant — a second rung-4 candidate independent of JANGQ-AI's
+      upload cadence, and the way to get a 3.6 JANG_2L (the oQ2
+      equivalent that Smelt can actually page). Quality unknown until the
+      battery runs; compare vs JANG_2S smelt-50. (NEW 2026-09-22)
+- [ ] Track: JANGQ-AI JANG_2L/JANG_2M upload for Qwen3.6-35B-A3B — a
+      prebuilt native-JANG ~2-bit 3.6 (the oQ2 weights in a
+      Smelt-compatible format) would slot straight into the rung-4
+      recipe as a second candidate. Their 3.6 uploads so far are JANGTQ
+      (mxtq, no Smelt) and JANG_4K/JANGTQ4 (4-bit-ish, too big).
+      (NEW 2026-09-22)
+- [ ] Mac-side: confirm the JANG_2S serve path end to end — the JANG_2S
+      profile is confirmed in the vmlx source (HYBRID_JANG_PROFILES) and
+      Smelt's ExpertIndex scans the Qwen 3.5 `switch_mlp` naming, but no
+      one has actually run `vmlx serve JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S
+      --smelt` yet. Fold into the rung-4 validation item: if serve
+      fails, the fallback is the plain (non-Smelt) vmlx serve at 10.75
+      GB text-only — borderline over budget, measure resident RAM.
+      (NEW 2026-09-22)
 
 ## Ground rules for this research track
 
