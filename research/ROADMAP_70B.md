@@ -1253,6 +1253,33 @@ measuring where quality actually breaks.
       ternary work applies. Only worth it if a future experiment needs
       many k-means re-fits (the fidelity thread that needed them is
       closed, so this is opportunistic). (NEW 2026-09-22)
+      NUMERICAL ANALYSIS 2026-09-22 (05:45 session, no code landed): the
+      "harder to keep bit-identical" is now precisely characterized, and
+      it is harder than the item implies. The ternary vectorization's
+      bit-identity trick (zero-filled masked sums == masked 1-D mean)
+      works ONLY because that path computes in float64, where numpy
+      reductions are sequential and exact zeros are order-preserving.
+      The unweighted `_lloyd_1d` refit is `x[m].mean()` in FLOAT32, and
+      numpy 1.26.4 uses pairwise summation for float32: measured
+      data-dependent divergence from sequential (one seed-0 n=96 case
+      differs; a 2000-trial masked probe shows the masked-1-D float32
+      mean vs the zero-filled float32 row mean disagree 1184/2000 — the
+      zero-fill trick provably does NOT transfer to float32). A correct
+      vectorization therefore has exactly two honest options: (a)
+      replicate numpy's recursive-halving pairwise tree per ragged
+      (group, cluster) segment in masked vectorized form (numpy 1.26:
+      halving recursion, sequential base case n<8 — verify against the
+      actual build, and pin with ADVERSARIAL oracle cases where pairwise
+      != sequential, not just random tensors), or (b) vectorize only
+      the assignment step `|wp-cent|.argmin(axis=2)` (elementwise
+      identical floats, trivially bit-identical) and keep the per-group
+      refit loop — a ~3-4x partial win that leaves the item half-done.
+      STAKES: obq.py's per-column Lloyd calls quantize_int2_kmeans_q8,
+      so the 475.48 full-model OBQ anchor pins the unweighted path too
+      (alongside the 795.96/realweights/SQNR anchors) — a non-identical
+      "optimization" would silently invalidate the published fidelity
+      ladder. Recommendation stands: opportunistic only; option (a) is a
+      numerical-archaeology project, not a 20-minute slice.
 - [ ] Mac-side experiment: local JANG_2L conversion — vmlx documents
       JANG conversion with `--calibration-method activations` ("better at
       2-3 bit", from the 2026-09-21 pm sweep) and MLX Studio ships
