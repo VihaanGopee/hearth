@@ -616,7 +616,16 @@ measuring where quality actually breaks.
       confirm identical scorecards, so the rung-3-vs-rung-4 comparison
       isn't confounded by transport differences (needs Justin's Mac;
       only meaningful once a model is served both ways). (NEW 2026-09-21)
-- [ ] Benchmark harness: quality-vs-quant curves on small models to validate the pipeline
+- [x] Benchmark harness: quality-vs-quant curves on small models to
+      validate the pipeline — CLOSED 2026-09-22: landed in substance, no
+      separate harness needed. `python3 -m src.quant_rnd.ppl` runs
+      per-scheme perplexity sweeps with measured bpw on GPT-2 124M
+      (7-scheme default; fp32 reference 53.50, sane), and
+      `src/quant_rnd/sweep.py` draws the SQNR-vs-bpw Pareto frontier
+      (matched-bitrate sweeps, seed 7, skew variants). The pipeline is
+      validated end to end by the honest fidelity ladder it produced
+      (naive -> Lloyd -> Fisher-reweight -> full-OBQ verdicts, all
+      measured against the 795.96 anchor).
 - [ ] Track BitNet.cpp releases + any 70B ternary model announcement
       (SWEEP 2026-09-21 pm: still nothing — avenue-A trigger not hit.
       microsoft/BitNet's largest public model remains BitNet-b1.58-2B-4T
