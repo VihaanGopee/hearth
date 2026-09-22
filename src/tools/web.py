@@ -35,7 +35,10 @@ def register(ctx: dict) -> None:
             try:
                 from ddgs import DDGS
             except ImportError:
-                from duckduckgo_search import DDGS  # older package name
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", message=".*renamed to.*ddgs.*")
+                    from duckduckgo_search import DDGS  # older package name
         except ImportError:
             return {"ok": False,
                     "error": "Web search needs duckduckgo-search: pip install duckduckgo-search"}
