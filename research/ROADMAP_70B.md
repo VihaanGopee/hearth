@@ -524,13 +524,27 @@ measuring where quality actually breaks.
 - [ ] Mac-side: verify whether `vmlx serve` accepts an HF repo id directly
       or needs a local snapshot dir (the RUNG4 recipe downloads first —
       note which form was used) (NEW 2026-09-21).
-- [ ] tools/eval_battery.py — OpenAI-compatible transport for the 19-prompt
+- [x] tools/eval_battery.py — OpenAI-compatible transport for the 19-prompt
       battery, so rung 4+ (vmlx / mlx_lm.server) can be scored with the same
-      checks as rungs 1-3. Same trick as measure_openai.py should apply:
-      reuse the battery's check/prompt definitions, swap the generate
-      transport for streamed /v1/chat/completions. The RUNG4 recipe's
-      intelligence verdict (battery score vs rung 3) currently requires
-      running the prompts manually — this closes that gap. (NEW 2026-09-21)
+      checks as rungs 1-3. LANDED 2026-09-21 as
+      `tools/eval_battery_openai.py` (15 new tests, suite green). Same trick
+      as measure_openai.py: reuses the battery's check/prompt/scorecard
+      definitions via import (identity-pinned in tests), swaps the generate
+      transport for non-streamed /v1/chat/completions (temp=0, max_tokens
+      512, stream_options unnecessary — timing isn't measured). Reuses
+      measure_openai's normalize_base_url + strip_think; OpenAI error
+      shapes (dict/string) surface loudly via BatteryError. One-or-two
+      model CLI, completion-token tally from usage per run, exit 0/1/2
+      semantics (1 = any check or request failed). RUNG4 recipe's manual
+      prompt note replaced with the tool invocation — the rung-4
+      intelligence verdict gap is closed.
+- [ ] Cross-transport battery parity — run tools/eval_battery.py (Ollama
+      /api/generate, temp=0, num_predict 512, think=false) and
+      tools/eval_battery_openai.py (vmlx/mlx_lm.server, temp=0,
+      max_tokens 512, <think>-stripped) against the SAME model and
+      confirm identical scorecards, so the rung-3-vs-rung-4 comparison
+      isn't confounded by transport differences (needs Justin's Mac;
+      only meaningful once a model is served both ways). (NEW 2026-09-21)
 - [ ] Benchmark harness: quality-vs-quant curves on small models to validate the pipeline
 - [ ] Track BitNet.cpp releases + any 70B ternary model announcement
 - [ ] Track oQ/JANG releases and 2-bit MoE quality reports

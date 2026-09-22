@@ -114,10 +114,13 @@ pressure with no swap is part of the pass.
 1. **Sanity (same 3 as rungs 1–3):** `17*23` → `391`; capital of France;
    repeat "quasar" exactly 3×. All at temp 0.
 2. **Intelligence verdict:** the side-by-side battery score vs rung 3.
-   `tools/eval_battery.py` is Ollama-shaped — until an OpenAI-compatible
-   transport exists, run its 19 prompts manually against the vmlx endpoint
-   and score with the same checks. A win on math/logic/honesty categories
-   over `qwen35-35b-a3b` is what promotes this from "fits" to "rung 4".
+   `tools/eval_battery_openai.py` (2026-09-21) runs the same 19 prompts +
+   checks as `tools/eval_battery.py` over the vmlx endpoint — the manual
+   prompt-running step is gone:
+   `python3 tools/eval_battery_openai.py --models Qwen3.6-35B-A3B-oQ2`
+   then compare the scorecard against the recorded rung-3
+   (`qwen35-35b-a3b`) numbers. A win on math/logic/honesty categories
+   over rung 3 is what promotes this from "fits" to "rung 4".
 3. **Caveat to measure, not assume:** Smelt biases routing toward
    resident experts. If quality under smelt-50 disappoints vs the 64%
    MMLU baseline expectation, re-run at `--smelt-experts 75` before
