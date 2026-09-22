@@ -34,6 +34,10 @@ ARCHES = {
     "qwen3-8b": (36, 8, 128),
     "qwen3-4b": (36, 8, 128),
     "qwen3-30b-a3b": (48, 8, 128),   # MoE; weights counted on total params
+    # Qwen3.5-35B-A3B: 40 layers, GQA-2 KV heads, head_dim 256 (from the
+    # official config.json, fetched via the HF API 2026-09-21). MoE; weights
+    # counted on total params (34.65B), decode traffic on active (~3.3B).
+    "qwen3.5-35b-a3b": (40, 2, 256),
 }
 
 

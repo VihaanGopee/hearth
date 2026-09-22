@@ -489,16 +489,38 @@ measuring where quality actually breaks.
       no option is 70B-dense quality; "70B-class" must be measured vs
       dense models that fit 16 GB, not assumed. Recommended Mac
       validation order in the survey note.
-- [ ] Mac-side: Qwen3.5-35B-A3B IQ2_M (10.6 GB) — measure tok/s + quality
-      (MMLU subset) on the M1 Pro; compare vs the oQ2 64% MMLU datapoint
-      (needs Justin's Mac)
+- [ ] Mac-side: Qwen3.5-35B-A3B UD-IQ2_XXS (10.66 GB measured) — measure
+      tok/s + quality (MMLU subset) on the M1 Pro per the rung-3 recipe
+      (research/recipes/RUNG3_qwen3_5_35b_a3b_moe.md); compare vs the oQ2
+      64% MMLU datapoint (needs Justin's Mac). NOTE 2026-09-21 pm: the
+      survey's "IQ2_M 10.6 GB" figure was wrong — HF tree API re-measure:
+      IQ2_M = 11.39 GB (does not fit the ~11 GB budget), IQ2_XXS =
+      10.66 GB. The rung-3 file is now IQ2_XXS, not IQ2_M.
+- [ ] Rung-3 Mac-side validation — run the rung-3 recipe end to end on
+      Justin's Mac (download, Ollama Modelfile, measure_rung.py --target
+      15); record measured tok/s, which tuning steps were needed, and the
+      quality-sanity outcome. The IQ2_XXS-vs-dense-8B quality-per-GB
+      comparison (MMLU subset or fixed task battery) is the follow-up
+      measurement that decides whether the rung means anything.
 - [ ] Mac-side: mtrpires mixed-IQK (11.38 GB) — does it hold under memory
       pressure with q4_0 KV cache at 8–12k ctx? (needs Justin's Mac)
-- [ ] Hearth: documented llamacpp recipe/profile for the 35B-A3B IQ2_M
-      (opt-in config snippet), wiring speculative prompt_lookup mode with
-      the Qwen3.6 MTP variant
+- [x] Hearth: documented rung-3 recipe/profile for the 35B-A3B — LANDED
+      2026-09-21 as `research/recipes/RUNG3_qwen3_5_35b_a3b_moe.md`
+      (primary file UD-IQ2_XXS 10.66 GB measured, not the survey's stale
+      IQ2_M figure; fitcheck gained arch `qwen3.5-35b-a3b` = (40, 2, 256)
+      from the official config.json; pass bar >= 15 tok/s usable, stretch
+      20+; two-bound roofline story 18.8 tok/s floor vs ~197 active-traffic
+      fiction; llamacpp + cascade opt-in snippets incl. prompt_lookup for
+      the MTP variant). 8 new tests, recipe-consistency tests pin the
+      RAM/roofline figures. The Mac-side validation item above is the
+      remaining half.
 - [ ] Re-check HF for a prebuilt oQ2/oQ2.5 35B-A3B MLX upload (Jundot org);
       if one appears at ~12.6 GB, re-evaluate vs IQ2_M on quality-per-GB
+- [ ] Data hygiene: `research/model_profiles.yaml` lists
+      qwen3.5-35b-a3b-oQ-2bit at est_gb 8.8, but the 2026-09-21 MoE survey
+      puts oQ2 MLX at ~12.6 GB. Re-measure the oQ2 size from HF (or the
+      oMLX docs) and correct the profile — the rung-3 file-size
+      misattribution above shows these numbers drift.
 - [ ] Quant R&D: vmlx "Smelt" mode (partial expert loading) — NEW 2026-09-21
       from the JANG release watch: vmlx README documents `--smelt` /
       `--smelt-experts N` for MoE models that don't fit in RAM - keeps the

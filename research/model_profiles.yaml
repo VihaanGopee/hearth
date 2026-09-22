@@ -28,6 +28,26 @@ profiles:
       research/recipes/RUNG2_qwen3_14b_20tps.md; measure with
       tools/measure_rung.py.
 
+  - name: qwen3.5-35b-a3b-iq2_xxs
+    params_b: 34.65
+    quant: UD-IQ2_XXS
+    est_gb: 10.66
+    backend: ollama
+    status: experimental
+    notes: >
+      Rung-3 ladder candidate (35B-class MoE at usable speed). Measured file
+      size 10.66 GB (HF tree API 2026-09-21 — the morning survey's 10.6 GB
+      figure was misattributed; IQ2_M re-measures at 11.39 GB and does not
+      fit). ~11.3 GB total @ 2048 ctx + q8_0 KV (fitcheck arch
+      qwen3.5-35b-a3b: 40 layers, GQA-2, head_dim 256) — the tightest rung
+      on RAM; needs a lean macOS. Decode cost set by ACTIVE params
+      (~3.3B/token), not total; pass bar >= 15 tok/s (usable), stretch 20+.
+      Quality at ~2.46 eff. bpw is the key unknown. Recipe at
+      research/recipes/RUNG3_qwen3_5_35b_a3b_moe.md; measure with
+      tools/measure_rung.py --target 15. Fallback: UD-IQ2_M (11.39 GB,
+      ~12 GB resident) if XXS quality disappoints and RAM allows; MTP
+      variant + llamacpp speculative prompt_lookup per the recipe.
+
   - name: llama3.3-70b-IQ1_M
     params_b: 70
     quant: IQ1_M

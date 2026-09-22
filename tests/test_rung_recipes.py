@@ -75,6 +75,51 @@ class TestRung2RecipeNumbers(unittest.TestCase):
             os.path.isfile(os.path.join(RECIPES, "RUNG2_qwen3_14b_20tps.md")))
 
 
+class TestRung3RecipeNumbers(unittest.TestCase):
+    """research/recipes/RUNG3_qwen3_5_35b_a3b_moe.md."""
+
+    def _estimate(self, n_ctx, cache_type):
+        r = estimate(34.65, "iq2_m", n_ctx, arch="qwen3.5-35b-a3b",
+                     cache_type=cache_type)
+        self.assertTrue(r["ok"], r.get("error"))
+        return r
+
+    def test_arch_entry_kv_2048_f16(self):
+        # GQA-2 KV heads, head_dim 256, 40 layers (official config.json via
+        # HF API 2026-09-21): KV = 2*40*2*256*2048*2 B = 0.168 GB.
+        r = self._estimate(2048, "f16")
+        self.assertAlmostEqual(r["kv_cache_gb"], 0.17, delta=0.03)
+
+    def test_arch_entry_kv_2048_q8_0(self):
+        r = self._estimate(2048, "q8_0")
+        self.assertAlmostEqual(r["kv_cache_gb"], 0.10, delta=0.03)
+
+    def test_total_with_measured_file_size(self):
+        # Recipe uses the MEASURED file (10.66 GB, HF tree API 2026-09-21),
+        # not fitcheck's nominal iq2_m bpw (2.7 -> 11.69 GB). Total @ 2048
+        # ctx + q8_0 KV: 10.66 + 0.10 + 0.5 runtime = ~11.3 GB.
+        r = self._estimate(2048, "q8_0")
+        total = 10.66 + r["kv_cache_gb"] + r["runtime_gb"]
+        self.assertAlmostEqual(total, 11.26, delta=0.15)
+
+    def test_total_2048_f16(self):
+        r = self._estimate(2048, "f16")
+        total = 10.66 + r["kv_cache_gb"] + r["runtime_gb"]
+        self.assertAlmostEqual(total, 11.33, delta=0.15)
+
+    def test_roofline_floor_below_20(self):
+        # Honest bound: even streaming the whole 10.66 GB file per token,
+        # the ceiling (18.8 tok/s) sits BELOW the old 20 bar -- the rung is
+        # decided by measurement, and the pass bar is 15 (usable).
+        floor = 200.0 / 10.66
+        self.assertAlmostEqual(floor, 18.8, delta=0.3)
+        self.assertLess(floor, 20.0)
+
+    def test_recipe_file_exists(self):
+        self.assertTrue(
+            os.path.isfile(os.path.join(RECIPES, "RUNG3_qwen3_5_35b_a3b_moe.md")))
+
+
 class TestRecipeConsistency(unittest.TestCase):
     """Every recipe named in model_profiles.yaml must exist on disk."""
 
@@ -90,6 +135,7 @@ class TestRecipeConsistency(unittest.TestCase):
                             f"missing recipe file: {p}")
         self.assertTrue(os.path.isfile(os.path.join(RECIPES, "RUNG1_qwen3_8b_20tps.md")))
         self.assertTrue(os.path.isfile(os.path.join(RECIPES, "RUNG2_qwen3_14b_20tps.md")))
+        self.assertTrue(os.path.isfile(os.path.join(RECIPES, "RUNG3_qwen3_5_35b_a3b_moe.md")))
 
 
 if __name__ == "__main__":
