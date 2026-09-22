@@ -265,7 +265,14 @@ def generate(base_url, model, prompt, num_predict=512, num_ctx=4096,
             % (base_url, e.reason if hasattr(e, "reason") else e))
     except (ValueError, UnicodeDecodeError) as e:
         raise BatteryError("bad JSON from Ollama: %s" % e)
-    return extract_response(payload)
+    if not isinstance(payload, dict):
+        raise BatteryError("unexpected Ollama response shape: %r" % (payload,))
+    # Surface API errors loudly; return the full payload so callers can also
+    # inspect the `thinking` field (a model that wraps its whole reply in
+    # <think> tags leaves `response` empty when thinking is stripped).
+    if payload.get("error"):
+        raise BatteryError("Ollama error: %s" % payload["error"])
+    return payload
 
 
 def ollama_stop(model):
@@ -299,7 +306,9 @@ def run_model(base_url, model, items, show_answers=False):
     print("MODEL %s (%d items)" % (model, len(items)), flush=True)
     for i, item in enumerate(items, 1):
         try:
-            answer = generate(base_url, model, item["prompt"])
+            payload = generate(base_url, model, item["prompt"])
+            answer = extract_response(payload)
+            thinking = payload.get("thinking") or ""
         except BatteryError as e:
             print("  [%s] ERROR: %s" % (item["id"], e), flush=True)
             results.append((item, None, False, ["request error"]))
@@ -312,6 +321,9 @@ def run_model(base_url, model, items, show_answers=False):
             flush=True)
         if show_answers:
             print("       answer: %s" % answer.strip(), flush=True)
+            if thinking.strip():
+                print("       thinking: %s" % thinking.strip()[:2000],
+                      flush=True)
         results.append((item, answer, passed, failed))
     return results
 
