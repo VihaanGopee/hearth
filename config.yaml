@@ -75,19 +75,34 @@ mlx:
   # adapter_path: "~/.hearth/adapters/lora"  # optional LoRA adapter
 
 # OpenAI-compatible HTTP servers (untested-on-Mac transport): set
-# backend: "openai" and point at `vmlx serve` (the rung-4 oQ2-smelt
-# recipe) or `mlx_lm.server` (the MLX tool-calling transport follow-up).
+# backend: "openai" and point at `vmlx serve` (the rung-4 JANG_2S smelt
+# recipe, research/recipes/RUNG4_jang2s_35b_smelt.md) or `mlx_lm.server`
+# (the MLX tool-calling transport follow-up).
 # openai:
 #   base_url: "http://localhost:8000"  # vmlx serve default port
-#   model: "Jundot/Qwen3.6-35B-A3B-oQ2"
+#   model: "JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S"
 #   temperature: 0.6
 #   # max_tokens: 1024    # optional per-reply cap
 #   # api_key: ...        # optional; or set OPENAI_API_KEY in the env
-# Also usable as a cascade big model:
+#
+# Rung-4 cascade: keep qwen3:8b resident via Ollama as the small model and
+# escalate hard queries to the vmlx-served JANG_2S Smelt model. Drop in (and
+# set backend: cascade) only AFTER the rung-4 Mac-side validation passes and
+# the openai transport is confirmed working. The tests pin this snippet —
+# keep the markers and the JANG_2S repo id intact.
+# RUNG4_CASCADE_EXAMPLE_BEGIN
 # cascade:
+#   # small omitted: defaults to the [ollama] block above (qwen3:8b)
+#   router: heuristic        # or "verify"; see src/cascade.py
+#   # heuristic_len_chars: 2000
+#   # heuristic_keyword_hits: 2
 #   big:
 #     backend: openai
-#     openai: {base_url: "http://localhost:8000", model: "Jundot/Qwen3.6-35B-A3B-oQ2"}
+#     openai:
+#       base_url: "http://localhost:8000"
+#       model: "JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S"
+#       temperature: 0.6
+# RUNG4_CASCADE_EXAMPLE_END
 
 memory:
   total_ram_gb: 16   # machine RAM

@@ -157,15 +157,33 @@ pressure with no swap is part of the pass.
    log resident RAM, tok/s, and which smelt fraction — that closes the
    rung-4 path honestly and the ladder waits on the next release.
 
-## Hearth wiring (not in this recipe)
+## Hearth wiring (after rung-4 validates)
 
 When vmlx (or MLX Studio's Server mode) is serving, Hearth speaks to it
 via `backend: openai` (`src/openai_backend.py`, landed 2026-09-21 —
-Mac-side transport still untested): the cascade big-model becomes
-`backend: openai` + `openai: {base_url: http://localhost:8000, model:
-JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S}` with qwen3:8b resident as the small
-model (see the commented example in config.yaml). This also unblocks the
-`mlx_lm.server` transport for the MLX tool-calling follow-up.
+Mac-side transport still untested). Drop this into `config.yaml`
+(also mirrored as a pinned, commented example there) and set
+`backend: cascade`:
+
+```yaml
+backend: cascade
+cascade:
+  # small omitted: defaults to the [ollama] block (qwen3:8b, resident)
+  router: heuristic        # or "verify"; see src/cascade.py
+  big:
+    backend: openai
+    openai:
+      base_url: "http://localhost:8000"   # vmlx serve default port
+      model: "JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S"
+      temperature: 0.6
+```
+
+The big client builds lazily on first escalation, so the JANG_2S Smelt
+model costs no resident RAM until a hard query actually fires. Only turn
+this on after the "Measure speed" / "Measure quality" items above pass —
+the cascade inherits whatever quality and tok/s the served model has.
+This wiring also unblocks the `mlx_lm.server` transport for the MLX
+tool-calling follow-up.
 
 ## What a validated rung 4 unlocks
 

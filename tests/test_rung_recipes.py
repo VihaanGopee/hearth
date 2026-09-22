@@ -8,6 +8,8 @@ import math
 import os
 import unittest
 
+import yaml
+
 from src.tools.fitcheck import estimate, moe_expert_gb, smelt_resident
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -201,7 +203,6 @@ class TestModelProfiles(unittest.TestCase):
     (the IQ2_M and oQ2 misattributions both came from stale estimates)."""
 
     def _profiles(self):
-        import yaml
         with open(os.path.join(REPO, "research", "model_profiles.yaml")) as f:
             return yaml.safe_load(f)["profiles"]
 
@@ -224,6 +225,64 @@ class TestModelProfiles(unittest.TestCase):
         for p in self._profiles():
             self.assertIn(p["backend"], ("ollama", "llamacpp", "mlx", "bitnet.cpp", "openai"),
                           p["name"])
+
+
+class TestRung4CascadeExample(unittest.TestCase):
+    """The commented rung-4 cascade drop-in in config.yaml must stay a valid,
+    buildable cascade spec pointing at the current rung-4 pick (JANG_2S).
+
+    This pins the exact drift that just got fixed: the example used to point
+    at the superseded oQ2 plan after the rung-4 pick changed to JANG_2S.
+    """
+
+    BEGIN = "# RUNG4_CASCADE_EXAMPLE_BEGIN"
+    END = "# RUNG4_CASCADE_EXAMPLE_END"
+    MODEL = "JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S"
+
+    def _example(self):
+        with open(os.path.join(REPO, "config.yaml"), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        start = next(i for i, l in enumerate(lines) if l.strip() == self.BEGIN)
+        end = next(i for i, l in enumerate(lines) if l.strip() == self.END)
+        self.assertGreater(end, start, "cascade example markers out of order")
+        body = []
+        for l in lines[start + 1:end]:
+            s = l.lstrip()
+            self.assertTrue(s.startswith("#"), f"example line not commented: {l!r}")
+            rest = s[1:]
+            # Strip exactly one space: the original YAML indentation must
+            # survive for safe_load to see the cascade/big nesting.
+            if rest.startswith(" "):
+                rest = rest[1:]
+            body.append(rest)
+        return yaml.safe_load("\n".join(body))
+
+    def test_example_parses_and_targets_jang2s(self):
+        ex = self._example()
+        cascade = ex["cascade"]
+        self.assertIn(cascade.get("router"), ("heuristic", "verify"))
+        # `small` omitted -> defaults to the [ollama] block (qwen3:8b).
+        self.assertNotIn("small", cascade)
+        big = cascade["big"]
+        self.assertEqual(big["backend"], "openai")
+        self.assertEqual(big["openai"]["base_url"], "http://localhost:8000")
+        self.assertEqual(big["openai"]["model"], self.MODEL)
+
+    def test_big_spec_builds_openai_client(self):
+        from src.agent import _build_llm_client
+        big = self._example()["cascade"]["big"]
+        client = _build_llm_client(big)  # no network: constructor is pure
+        self.assertEqual(client.model, self.MODEL)
+        self.assertTrue(
+            client.url.startswith("http://localhost:8000/v1"),
+            client.url)
+
+    def test_no_stale_oq2_references_in_config(self):
+        with open(os.path.join(REPO, "config.yaml"), encoding="utf-8") as f:
+            text = f.read()
+        self.assertNotIn(
+            "Jundot/Qwen3.6-35B-A3B-oQ2", text,
+            "superseded rung-4 pick still referenced in config.yaml")
 
 
 if __name__ == "__main__":
