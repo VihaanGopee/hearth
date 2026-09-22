@@ -462,6 +462,32 @@ measuring where quality actually breaks.
       items below)
 - [ ] Quant R&D: if a candidate holds up on real perplexity, design the
       ggml CPU kernel (ternary add/sub path) + upstream write-up/PR
+      DESIGN STUDY LANDED 2026-09-22 as research/ternary_kernel_design.md
+      (layout spec for ternary_1step: 2-bit codes + fp16 scale = 34 B/group,
+      kernel loop, SIMD sketch, PR shape + blockers) even though the
+      item's trigger never fired (no candidate survived perplexity) — the
+      doc is the contingent deliverable, not a readiness claim. It also
+      records a PACKING CORRECTION: opcount.py's decode roofline used the
+      entropy bpw (1.710) for ternary vs true storage bpw (2.375) for the
+      k-means reference — packable ternary is 2.125 bpw (18.59 GB @ 70B),
+      so the honest decode ceiling is 10.0 t/s, a 1.11x (not 1.36x) edge
+      over int2_kmeans_q8's 9.0 t/s. Energy-proxy (3.52x) and prefill
+      compute-bound (1.795x) ratios are op-driven and survive. Budget
+      consequence: 18.59 GB is further over the 10–11 GB budget — avenue C
+      stays closed, more firmly.
+- [ ] Quant R&D: opcount storage-bpw correction — add a packable
+      `storage_bpw` notion to `src/quant_rnd/opcount.py`'s scheme_report
+      (ternary family: 2.0 + scale overhead, not log2(3) entropy) and
+      re-pin the decode figures; expected shift 1.36x -> ~1.11x decode
+      ratio vs int2_kmeans_q8. Keep entropy bpw for the SQNR/PPL
+      comparisons. (NEW 2026-09-22, from the kernel design doc)
+- [ ] Quant R&D: fitted-ternary encoder emitting the TQ1_0 packing
+      (llama.cpp discussion/PR) — a 1-step Lloyd fit as a drop-in quality
+      uplift for the existing naive-ternary type (+1.37 dB measured at
+      matched bitrate), reusing upstream's layout and kernel. CONTINGENT
+      on >=7B-scale perplexity evidence that the SQNR win transfers to
+      real quality; our collapse-territory GPT-2 numbers do not qualify.
+      (NEW 2026-09-22, from the kernel design doc)
 - [x] Quant R&D: add a K-means (Lloyd) 2-bit baseline — the fair classical
       comparison the current naive int2 baseline lacks (landed 2026-09-20,
       `int2_kmeans`, 2.5 bpw; see result note above)
