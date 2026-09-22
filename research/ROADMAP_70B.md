@@ -505,11 +505,19 @@ measuring where quality actually breaks.
       real agent turns (mlx_lm.server tool support is the specific
       unknown), then wire the cascade big = vmlx-smelt config for the
       rung-4 validation item (NEW 2026-09-21; transport is untested-on-Mac).
-- [ ] tools/measure_openai.py — generalize the rung harness to
-      OpenAI-compatible endpoints (vmlx, mlx_lm.server): same 3 speed
-      prompts + 3 sanity checks + streamed-token timing, so rungs 4+ are
-      measurable with the same protocol as rungs 1-3 (NEW 2026-09-21;
-      the RUNG4 recipe currently carries a manual snippet instead).
+- [x] tools/measure_openai.py — LANDED 2026-09-21: generalizes the rung
+      harness to OpenAI-compatible endpoints (vmlx, mlx_lm.server).
+      Reuses measure_rung's pure core (SPEED_PROMPTS, QUALITY_CHECKS,
+      run_rung, format_report) via import; adds a streamed
+      /v1/chat/completions generate_fn returning an Ollama-shaped payload
+      (eval_count from usage.completion_tokens when the server provides it,
+      else chunk-counted and labeled; wall-clock eval_duration). Same
+      PASS/FAIL report + extra STREAM META lines (ttft, token source).
+      `<think>` blocks stripped from quality-check text (thinking tokens
+      still count toward decode tok/s — honest). Base-URL accepts root,
+      /v1, or the full path; api key via --api-key/OPENAI_API_KEY. Default
+      --target 10.0 (the rung-4 pass bar). 11 new tests (fake SSE server),
+      suite green. RUNG4 recipe's manual snippet replaced by the tool.
 - [ ] Track: oQ2 64% MMLU figure is measured on the 3.5 variant (oMLX
       docs); the Jundot 3.6 variant is unmeasured — the Mac-side battery
       score vs rung 3 is the measurement, not this figure (NEW 2026-09-21).

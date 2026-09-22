@@ -89,25 +89,20 @@ passed alone is 50.)
 ## Measure speed (OpenAI-compatible endpoint)
 
 vmlx serves an OpenAI-compatible API, so `tools/measure_rung.py`
-(Ollama-shaped) does not apply. Time streamed tokens instead:
+(Ollama-shaped) does not apply. Use `tools/measure_openai.py` — the same
+rung protocol (3 speed prompts + 3 quality sanity checks + PASS/FAIL
+report), but with streamed-token timing against `/v1/chat/completions`:
 
-```python
-import json, time, urllib.request
-def tps(prompt, n=256):
-    body = {"model": "Qwen3.6-35B-A3B-oQ2", "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0, "max_tokens": n, "stream": True}
-    req = urllib.request.Request("http://localhost:8080/v1/chat/completions",
-        data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
-    t0, ntok = None, 0
-    with urllib.request.urlopen(req, timeout=300) as r:
-        for line in r:
-            if line.startswith(b"data: ") and b"[DONE]" not in line:
-                d = json.loads(line[6:])
-                if d["choices"][0]["delta"].get("content"):
-                    t0 = t0 or time.time(); ntok += 1
-    return ntok / (time.time() - t0)
+```bash
+python3 tools/measure_openai.py --model Qwen3.6-35B-A3B-oQ2 --target 10
+# --base-url accepts root, /v1, or the full chat/completions path
+# (default http://localhost:8080); --api-key or OPENAI_API_KEY if needed
 ```
 
+Token counts come from the stream's `usage.completion_tokens` when the
+server provides it, else from chunk counting (the report labels which).
+`<think>` blocks are stripped from the quality-check text (Qwen thinking
+tokens still count toward decode tok/s — they cost real decode time).
 (Adjust the port/model name to what `vmlx serve` prints.) Run the 3 rung
 prompts — short factual answer, code generation, ~150-word passage +
 summary — 256 tokens each, temp 0; report per-prompt and mean tok/s.
