@@ -4,13 +4,16 @@
 sustaining **usable decode speed** on Justin's M1 Pro, **measured** (not
 estimated), plus a quality sanity check. A rung counts only when both pass.
 
-**Pass criteria:** mean decode tok/s **≥ 15** **and** all 3 quality sanity
+**Pass criteria:** mean decode tok/s **≥ 10** **and** all 3 quality sanity
 checks pass. The script exits 0 and prints `RESULT: RUNG PASS`. Paste the
-full output back as the measurement record. **Stretch goal:** ≥ 20 tok/s.
+full output back as the measurement record. ≥ 15 is comfortable, ≥ 20 is
+gravy.
 
-Unlike rungs 1–2, the bar here is "usable", not 20 — the decode ceiling for
-a MoE is kernel-dependent (see the roofline section), so 15 is the honest
-bar and anything above it is gravy.
+Unlike rungs 1–2, the bar here is "usable", not 20 — per the
+intelligence-first direction, speed is secondary and ~10+ tok/s is enough
+for interactive use. The decode ceiling for a MoE is kernel-dependent (see
+the roofline section), so 10 is the honest bar and anything above it is
+gravy.
 
 ## What to download
 
@@ -57,18 +60,25 @@ below use the **measured file size**, not fitcheck's nominal bpw.
 | Component | Size |
 |---|---|
 | Weights (UD-IQ2_XXS, measured file) | 10.66 GB |
-| KV cache @ 2048 ctx, f16 | 0.17 GB |
-| KV cache @ 2048 ctx, q8_0 | 0.10 GB |
-| KV cache @ 2048 ctx, q4_0 | 0.05 GB |
-| KV cache @ 4096 ctx, q8_0 | 0.19 GB |
+| KV cache @ 2048 ctx, f16 | 0.04 GB |
+| KV cache @ 2048 ctx, q8_0 | 0.02 GB |
+| KV cache @ 2048 ctx, q4_0 | 0.01 GB |
+| KV cache @ 4096 ctx, q8_0 | 0.05 GB |
 | Runtime overhead | ~0.5 GB |
-| **Total @ 2048, q8_0** | **~11.3 GB** |
-| **Total @ 2048, f16** | **~11.3 GB** |
-| **Total @ 4096, q8_0** | **~11.4 GB** |
+| **Total @ 2048, q8_0** | **~11.2 GB** |
+| **Total @ 2048, f16** | **~11.2 GB** |
+| **Total @ 4096, q8_0** | **~11.2 GB** |
+
+> **Correction (2026-09-21):** an earlier version of this table applied the
+> KV cache to all 40 layers (0.17 GB @ 2048 f16). Qwen3.5-35B-A3B is a
+> hybrid architecture — only the 10 full-attention layers carry a KV
+> cache; the 30 Gated DeltaNet layers carry small recurrent state instead
+> (unmodeled here). Corrected figures above; `fitcheck` arch
+> `qwen3.5-35b-a3b` now models this.
 
 **This is the tightest rung on RAM.** The file alone is ~97% of the ~11 GB
 usable budget; the whole thing only fits if macOS + everything else stays
-under ~4.7 GB. Preconditions: clean boot (or at least close other apps),
+under ~4.8 GB. Preconditions: clean boot (or at least close other apps),
 then verify the full model is resident with `ollama ps` / Activity
 Monitor. Any swap activity during the run fails the *file*, not the
 measurement — record it and move to the fallbacks.
@@ -80,7 +90,7 @@ the environment — see rung 2's recipe for the `launchctl setenv` form):
 
 ```bash
 cd ~/workspace/local-agent
-python3 tools/measure_rung.py --model qwen35-35b-a3b --target 15 --num-ctx 2048
+python3 tools/measure_rung.py --model qwen35-35b-a3b --target 10 --num-ctx 2048
 ```
 
 Same harness as rungs 1–2: POSTs to Ollama's `/api/generate`
@@ -104,12 +114,12 @@ token → 200 / 10.66 ≈ **18.8 tok/s** — *below* the old 20 bar. The truth
 is between the two. The one community datapoint (unverified, not M1 Pro):
 **30 tok/s on a Mac mini M4** (120 GB/s bandwidth; the M1 Pro has 200).
 
-That uncertainty is exactly why rung 3's bar is "usable speed" (15) rather
+That uncertainty is exactly why rung 3's bar is "usable speed" (10) rather
 than 20: the ceiling is kernel-dependent and only the measurement counts.
 If the M1 Pro lands near the M4 datapoint scaled by bandwidth, 20+ is in
 reach — record whatever the harness prints, honestly.
 
-## If below 15 tok/s or OOM — tune in this order
+## If below 10 tok/s or OOM — tune in this order
 
 1. **RAM first — this rung is RAM-bound, not compute-bound.** Close
    everything; re-run from a clean boot if needed. `ollama ps` must show
@@ -125,7 +135,7 @@ reach — record whatever the harness prints, honestly.
 5. **Fallback files** (each needs its own full harness run + quality
    sanity — a rung measured on a fallback still counts if the file and the
    sanity results are in the record):
-   - `Qwen3.5-35B-A3B-UD-IQ2_M.gguf` (**11.39 GB**, ~12.0 GB resident @
+   - `Qwen3.5-35B-A3B-UD-IQ2_M.gguf` (**11.39 GB**, ~11.9 GB resident @
      2048/q8_0): higher effective bpw (~2.63) if the XXS quality
      disappoints — **only if the Mac has the headroom**, it does not fit
      the standard ~11 GB budget.
@@ -139,7 +149,7 @@ reach — record whatever the harness prints, honestly.
    - oQ2 MLX (~12.6 GB, the benchmarked-quality ~2-bit option at 64%
      MMLU) via `vmlx --smelt 50` (see the backlog's Smelt item): the
      flash-paged path if nothing fits fully resident.
-6. **If nothing is both resident and ≥ 15 tok/s:** that is a result, not a
+6. **If nothing is both resident and ≥ 10 tok/s:** that is a result, not a
    failure. Log the best measured number, which files were tried, and
    where RAM vs speed bit. Rung 3 then waits on the oQ2/Smelt path or a
    smaller MoE — do not force it.

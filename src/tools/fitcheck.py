@@ -25,6 +25,9 @@ QUANT_BPW = {
 CACHE_BYTES = {"f16": 2.0, "q8_0": 1.15, "q4_0": 0.65, "q4_1": 0.65}
 
 # (n_layer, n_kv_heads, head_dim) for well-known architectures. Approximate.
+# Optional 4th element: n_kv_layers — how many layers actually carry a KV
+# cache. Defaults to n_layer; hybrid architectures (full attention mixed
+# with linear-attention/SSM layers) only pay KV cache on the former.
 ARCHES = {
     "llama-70b": (80, 8, 128),
     "llama-8b": (32, 8, 128),
@@ -35,9 +38,12 @@ ARCHES = {
     "qwen3-4b": (36, 8, 128),
     "qwen3-30b-a3b": (48, 8, 128),   # MoE; weights counted on total params
     # Qwen3.5-35B-A3B: 40 layers, GQA-2 KV heads, head_dim 256 (from the
-    # official config.json, fetched via the HF API 2026-09-21). MoE; weights
-    # counted on total params (34.65B), decode traffic on active (~3.3B).
-    "qwen3.5-35b-a3b": (40, 2, 256),
+    # official config.json, fetched via the HF API 2026-09-21). Hybrid
+    # architecture: only the 10 full-attention layers carry a KV cache;
+    # the 30 Gated DeltaNet layers carry small recurrent state instead
+    # (unmodeled here). MoE; weights counted on total params (34.65B),
+    # decode traffic on active (~3.3B).
+    "qwen3.5-35b-a3b": (40, 2, 256, 10),
 }
 
 
@@ -52,18 +58,22 @@ def estimate(params_b: float, quant: str, n_ctx: int,
     bpw = QUANT_BPW[q]
     weights_gb = params_b * 1e9 * bpw / 8 / 1e9
 
+    n_kv_layers = n_layer  # layers carrying KV cache; hybrid archs override
     if arch:
         if arch not in ARCHES:
             return {"ok": False,
                     "error": f"Unknown arch '{arch}'. Known: {sorted(ARCHES)} "
                              f"or pass n_layer/n_kv_heads directly."}
-        n_layer, n_kv_heads, head_dim = ARCHES[arch]
+        entry = ARCHES[arch]
+        n_layer, n_kv_heads, head_dim = entry[0], entry[1], entry[2]
+        n_kv_layers = entry[3] if len(entry) > 3 else n_layer
     if n_layer is None or n_kv_heads is None:
         return {"ok": False,
                 "error": "Need arch= or n_layer= and n_kv_heads= for KV cache math."}
     cb = CACHE_BYTES.get(cache_type.lower(), 2.0)
-    # 2x for K and V
-    kv_bytes = 2 * n_layer * n_kv_heads * head_dim * n_ctx * cb
+    # 2x for K and V; only the layers that carry KV cache count (hybrid
+    # architectures mix full-attention layers with SSM/linear layers).
+    kv_bytes = 2 * n_kv_layers * n_kv_heads * head_dim * n_ctx * cb
     kv_gb = kv_bytes / 1e9
     runtime_gb = 0.5  # compute buffers, tokenizer, overhead
     total_gb = weights_gb + kv_gb + runtime_gb
