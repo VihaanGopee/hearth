@@ -461,7 +461,8 @@ measuring where quality actually breaks.
       >=70B — TQ1_0 hits unchanged; the TQ2_0 ecosystem is visibly maturing
       at small scale (TriLM, Ternary-Bonsai, ERNIE-4.5-VL-28B-A3B-TQ1_0/TQ2_0,
       Gemma3-27B-TQ2_0, bitnet-family TQ2_0 conversions) — real tooling
-      love for the format, but no 70B file. Item stays WATCH.
+      love for the format, but no 70B file. RE-SURVEYED 2026-09-22 (~03:50
+      PDT): still nothing >=70B via the HF API. Item stays WATCH.
 - [ ] Verify Ollama's Metal kernel path for TQ1_0/TQ2_0 quants on the Mac
       (type support confirmed at llama.cpp b10969; whether ternary matmuls
       take an optimized path or a slow fallback on Apple Silicon is
@@ -845,7 +846,8 @@ measuring where quality actually breaks.
 - [ ] Watch: Nemotron-3-Nano-Omni-30B-A3B-JANGTQ2 (JANGQ-AI, 0 downloads
       2026-09-21) — a NEW 30B-A3B MoE family with the JANGTQ2 format;
       if quality reports appear, evaluate as a 35B-A3B alternative at
-      smaller size. (NEW 2026-09-21 pm sweep)
+      smaller size. (NEW 2026-09-21 pm sweep; STILL 0 DOWNLOADS 2026-09-22
+      ~03:50 PDT — no quality signal yet.)
 - [x] Quant R&D: low-active-parameter MoE survey — SURVEYED 2026-09-21
       (research/moe_survey_2026-09-21.md). Central candidate confirmed:
       Qwen3.5-35B-A3B (35B total / 3.3B active, 256 experts 8+1 shared,
@@ -1241,6 +1243,10 @@ measuring where quality actually breaks.
       Smelt-compatible format) would slot straight into the rung-4
       recipe as a second candidate. Their 3.6 uploads so far are JANGTQ
       (mxtq, no Smelt) and JANG_4K/JANGTQ4 (4-bit-ish, too big).
+      SWEEP 2026-09-22 ~03:50 PDT: no new 35B-A3B uploads (all JANGQ-AI
+      entries last-modified 2026-09-08); Jundot nothing new in the oQ2
+      class for 35B (latest are DeepSeek-V4.1-Flash / GLM-5.3 / Qwen3.8
+      oQ variants).
       (NEW 2026-09-22)
 - [ ] Mac-side: confirm the JANG_2S serve path end to end — the JANG_2S
       profile is confirmed in the vmlx source (HYBRID_JANG_PROFILES) and
