@@ -663,6 +663,18 @@ measuring where quality actually breaks.
       expert subset + routing bias). Compare resident RAM, decode tok/s,
       and quality head-to-head with vmlx --smelt 50 when the rung-4
       validation runs. (SWEEP 2026-09-22)
+      DOC CHECK 2026-09-22 (am): features.md pins model formats to
+      SafeTensors 4-bit / 8-bit / FP16 / NVFP4 pre-quantized — NO 2-bit,
+      no oQ/JANG custom layouts, so it CANNOT serve the Jundot oQ2
+      2-bit weights; the "smarter Smelt" comparison is moot for rung 4's
+      pick. TIE conversion is a per-model script
+      (expert_shard_layout.py). API is SSE OpenAI/Anthropic/Responses on
+      localhost:8080 (Hearth's openai backend could drive it IF the
+      format loaded). Requires macOS 15+ (Sequoia) — check Justin's OS
+      version before any install attempt. Verdict: not a rung-4
+      transport; keep as WATCH for (a) a future 4-bit 35B-A3B path where
+      TIE-vs-Smelt paging could actually be compared, (b) 2-bit format
+      support landing. (NEW 2026-09-22)
 - [ ] Track: ddalcu/mlx-serve (MLX Core.app) — NEW 2026-09-22: Mac-native
       MLX server speaking the Ollama API (/api/chat, /api/generate,
       /api/tags) alongside OpenAI/Anthropic — Hearth's existing ollama
@@ -671,11 +683,38 @@ measuring where quality actually breaks.
       Next support. Evaluate as the rung-4 transport if vmlx Smelt
       quality disappoints, and as the mlx_lm.server alternative for the
       MLX tool-calling follow-up. (SWEEP 2026-09-22)
+      DOC CHECK 2026-09-22 (am): docs/models.md lists Qwen 3/3.5/3.6/3.8
+      incl. qwen3_5_moe (Qwen3.6-35B-A3B named) and claims a faster
+      Qwen-MoE decode path (+26% raw on 35B-A3B vs LM Studio); GGUF runs
+      via embedded llama.cpp — so the rung-3 IQ2_XXS GGUF serves through
+      it TODAY, driven by Hearth's existing backend unchanged (concrete
+      Mac-side test: tok/s vs Ollama on the same file). Two blockers for
+      oQ2: (1) whether it parses oQ2's affine-2bit custom MLX layout is
+      UNVERIFIED (docs say "MLX models" broadly); (2) no documented
+      Smelt-equivalent expert paging, and 13.1 GB fully resident exceeds
+      the ~11 GB budget regardless — so oQ2 can't fit under mlx-serve
+      even if the format loads. Realistic role: faster Ollama-API
+      transport for the rung-3 GGUF + the mlx_lm.server alternative for
+      MLX tool-calling, NOT an oQ2 Smelt replacement. Also watch ddalcu's
+      own iQ-MLX family (imatrix-calibrated mixed-width MLX, e.g.
+      Qwen3.8-27B 3.8bpw 13.0 GB text-only) — a Qwen3.6-35B-A3B-iQ-MLX
+      upload would be a native mlx-serve rung-4 candidate. (NEW 2026-09-22)
 - [ ] Track: mlxl3 (0xZKnw/mlxl3) — NEW 2026-09-22: EXL3
       inference/conversion engine on MLX with JIT Metal kernels and
       CPU-vs-Metal conformance tests at every bit width 1-8. EXL3 is a
       new format family on the Mac side; watch for a sub-2-bit EXL3
       35B-A3B / 70B-class upload that fits the budget. (SWEEP 2026-09-22)
+      DOC CHECK 2026-09-22 (am): it is a standalone Desktop app
+      (v1.0.2) + engine, NOT an HTTP server — no documented
+      Ollama/OpenAI API surface, so Hearth has no transport to it today
+      (verify if a 35B-A3B EXL3 upload appears). Requires macOS 26.2+
+      and is ad-hoc signed, NOT notarized (Gatekeeper "Open Anyway"
+      friction on install). MoE support is in progress (mapped
+      two-launch SwitchGLU path for selected experts). EXL3 quants
+      already exist on HF at 1.40-2.00 bpw — but for Qwen3.8-27B (dense
+      hybrid), not the 35B-A3B MoE; at 2.00 bpw a 27B is ~6.75 GB, which
+      fits — a 35B-A3B EXL3 ~2bpw upload would be ~9 GB and inside the
+      budget. Watch item stands, transport question added. (NEW 2026-09-22)
 - [ ] Quant R&D: JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S candidate — NEW
       2026-09-21 (pm sweep): prebuilt MLX JANG 2-bit for OUR rung-3
       model. Measured **11.67 GB** via HF tree API — but the model card
@@ -700,7 +739,10 @@ measuring where quality actually breaks.
       text-only) → Smelt. Mac-side: quality battery vs oQ2 (rung-4's
       current pick); compare the TurboQuant codebook claim ("better
       quality AND faster decode than affine 2-bit at the same budget")
-      against our own opcount/SQNR numbers.
+      against our own opcount/SQNR numbers. NOTE 2026-09-22: the vmlx
+      org also ships jjang-ai/mlxstudio, a Mac app with first-class
+      JANG-format support (per its README) — a GUI alternative to the
+      jang-tools loader path for evaluating these two JANG candidates.
 - [ ] Watch: Nemotron-3-Nano-Omni-30B-A3B-JANGTQ2 (JANGQ-AI, 0 downloads
       2026-09-21) — a NEW 30B-A3B MoE family with the JANGTQ2 format;
       if quality reports appear, evaluate as a 35B-A3B alternative at
