@@ -18,6 +18,7 @@ from src.quant_rnd import (
     quantize_int2_kmeans,
     quantize_int2_kmeans_q8,
     quantize_int2_symmetric,
+    quantize_int4_uniform,
     quantize_int8_uniform,
     quantize_ternary_lloyd,
     quantize_ternary_lloyd_ds,
@@ -75,7 +76,8 @@ class TestSchemes(unittest.TestCase):
                          {"ternary_uniform", "ternary_lloyd", "ternary_lloyd_ds",
                           "ternary_1step", "ternary_1step_sp",
                           "ternary_1step_ds",
-                          "int2_symmetric", "int8_uniform", "int2_kmeans",
+                          "int2_symmetric", "int8_uniform", "int4_uniform",
+                          "int2_kmeans",
                           "int2_kmeans_q8",
                           "int2_outlier_retain", "dual_scale_ternary",
                           "ternary_outlier"})
@@ -112,6 +114,42 @@ class TestSchemes(unittest.TestCase):
         group_id = np.arange(n) // 128
         manual = q.codes.astype(np.float32) * q.scales[group_id, 0]
         np.testing.assert_array_equal(q.reconstruct(), manual)
+
+    def test_int4_codes_valid(self):
+        q = quantize_int4_uniform(self.w)
+        self.assertEqual(q.codes.dtype, np.int8)
+        self.assertTrue(np.all(q.codes >= -7))
+        self.assertTrue(np.all(q.codes <= 7))
+
+    def test_int4_bpw_accounting(self):
+        # 4-bit payload + one fp16 scale per group; overhead halves
+        # when the group size doubles.
+        q = quantize_int4_uniform(self.w)
+        self.assertAlmostEqual(q.bpw, 4.0 + 16 / 128, places=6)
+        q64 = quantize_int4_uniform(self.w, group_size=64)
+        self.assertAlmostEqual(q64.bpw, 4.0 + 16 / 64, places=6)
+
+    def test_int4_multiplicative_decode(self):
+        # int4_uniform is neither a codebook nor a dual-scale scheme:
+        # decode is the plain codes * scale path, pinned against a
+        # manual recomputation so a mis-registration can't silently
+        # re-decode through the wrong branch.
+        q = quantize_int4_uniform(self.w)
+        n = self.w.shape[0]
+        group_id = np.arange(n) // 128
+        manual = q.codes.astype(np.float32) * q.scales[group_id, 0]
+        np.testing.assert_array_equal(q.reconstruct(), manual)
+
+    def test_int4_deterministic_and_near_lossless(self):
+        q1 = quantize_int4_uniform(self.w)
+        q2 = quantize_int4_uniform(self.w)
+        np.testing.assert_array_equal(q1.codes, q2.codes)
+        rel = np.linalg.norm(q1.reconstruct() - self.w) / np.linalg.norm(self.w)
+        # q4 on synthetic weights: error is ~7.7x the q8 reference
+        # (0.154 vs 0.02), as expected for 7 vs 127 levels. The bound
+        # pins the encoder's behavior on this distribution; if it ever
+        # fails the encoder changed, not the tolerance.
+        self.assertLess(rel, 0.20)
 
     def test_int8_deterministic_and_near_lossless(self):
         q1 = quantize_int8_uniform(self.w)
@@ -1700,6 +1738,29 @@ class TestQuantizeModel(unittest.TestCase):
         with self.assertRaises(KeyError):
             quantize_model(self._fake_dict(), "int2_kmeans_q8",
                            group_size=32, only_names={"nope.weight"})
+
+    def test_only_names_embedding_without_embeddings_flag_raises(self):
+        # The silent-no-op trap: wte is not a linear target, so
+        # only_names={"wte.weight"} alone selects nothing. Must fail
+        # fast with a hint, not burn a quantize+forward and crash the
+        # printer on bpw=None.
+        with self.assertRaises(ValueError):
+            quantize_model(self._fake_dict(), "int4_uniform",
+                           group_size=32, only_names={"wte.weight"})
+
+    def test_only_names_embedding_with_embeddings_flag_quantizes(self):
+        fake = self._fake_dict()
+        out, bpw = quantize_model(fake, "int4_uniform", group_size=32,
+                                  quantize_embeddings=True,
+                                  only_names={"wte.weight"})
+        # the named table is quantized...
+        self.assertFalse(np.allclose(out["wte.weight"],
+                                     fake["wte.weight"]))
+        # ...everything else passes through fp32 unchanged...
+        np.testing.assert_array_equal(out["h.0.mlp.c_fc.weight"],
+                                      fake["h.0.mlp.c_fc.weight"])
+        # ...and the reported bpw is the scheme's, not None.
+        self.assertAlmostEqual(bpw, 4.0 + 16 / 32, places=6)
 
     def test_only_names_none_is_default_all_linear(self):
         a, _ = quantize_model(self._fake_dict(), "int2_symmetric",

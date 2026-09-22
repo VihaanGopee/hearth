@@ -142,7 +142,9 @@ def quantize_model(tensors: dict, scheme_name: str,
     `only_names`: restrict quantization targets to this subset of tensor
     names (must be linear/embedding names as applicable); everything else
     passes through fp32. None (default) keeps the original behavior of
-    quantizing every linear weight.
+    quantizing every linear weight. Raises ValueError if the selection is
+    empty (e.g. an embedding name without `quantize_embeddings`) — a
+    fail-fast against the silent no-op.
 
     `sample_weights`: optional {tensor_name: flat per-weight importance}
     (see fisher.per_weight_importance). It is passed as `sample_weight=`
@@ -172,6 +174,15 @@ def quantize_model(tensors: dict, scheme_name: str,
         if unknown:
             raise KeyError(f"only_names has unknown tensors: {sorted(unknown)}")
         targets &= set(only_names)
+        if not targets:
+            # Fail fast on the silent no-op: --only-names wte.weight
+            # without --quantize-embeddings selects nothing (embeddings
+            # are not linear targets), and the printer then crashes on
+            # bpw=None after burning a full quantize+forward cycle.
+            raise ValueError(
+                f"only_names {sorted(only_names)} selected no quantization "
+                "targets; embedding tables (wte/wpe) need "
+                "--quantize-embeddings")
     out = {}
     bpw = None
     for name, t in tensors.items():

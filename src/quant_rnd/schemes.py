@@ -170,6 +170,26 @@ def quantize_int8_uniform(w: np.ndarray, group_size: int = GROUP_SIZE) -> QuantR
                        bpw, group_size=group_size)
 
 
+def quantize_int4_uniform(w: np.ndarray, group_size: int = GROUP_SIZE) -> QuantResult:
+    """Symmetric uniform int4: 15 levels in [-7, 7] * absmax/7.
+
+    The mid probe for the embedding-table question (roadmap 2026-09-22):
+    q8 on wte survives (ppl 54.76 vs 53.50 fp32) and 2-bit collapses
+    (ppl inf) — is there a survivable bitrate between 2-bit and q8 for
+    the tied head? One fp16 scale per group -> 4 + 16/group_size bpw.
+    Decode is the plain multiplicative path (registered in neither the
+    codebook nor the dual-scale sets). Deterministic, O(n).
+    """
+    wp, n_groups, n = _groups(w, group_size)
+    amax = np.max(np.abs(wp), axis=1, keepdims=True).astype(np.float32)
+    amax = np.maximum(amax, 1e-12)  # all-zero group guard
+    s = amax / 7.0
+    codes = np.clip(np.round(wp / s), -7, 7).astype(np.int8).ravel()[:n]
+    bpw = 4.0 + _scale_overhead(1, group_size)
+    return QuantResult("int4_uniform", codes, s.reshape(n_groups, 1),
+                       bpw, group_size=group_size)
+
+
 def quantize_int2_outlier_retain(w: np.ndarray, group_size: int = GROUP_SIZE,
                                  outlier_frac: float = 0.005) -> QuantResult:
     """2-bit + top outlier_frac magnitudes kept exactly in fp16."""
@@ -616,6 +636,7 @@ SCHEMES = {
     "ternary_1step_ds": quantize_ternary_1step_ds,
     "int2_symmetric": quantize_int2_symmetric,
     "int8_uniform": quantize_int8_uniform,
+    "int4_uniform": quantize_int4_uniform,
     "int2_kmeans": quantize_int2_kmeans,
     "int2_kmeans_q8": quantize_int2_kmeans_q8,
     "int2_outlier_retain": quantize_int2_outlier_retain,
