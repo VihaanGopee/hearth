@@ -293,22 +293,40 @@ measuring where quality actually breaks.
       the 2.375 anchor). A per-tensor top-K selector would allow exact
       bitrate matching and test whether the negative is granularity, not
       principle. Low priority given the verdict below. (NEW 2026-09-21)
-- [ ] Quant R&D: measure activation drift under quantization — the
+- [x] Quant R&D: measure activation drift under quantization — the
       sensitivity experiment's leading explanation is that the fp32
       Fisher ranking is invalidated once other blocks are quantized.
-      Testable: compare the fp32-activation Fisher ranking against the
-      ranking recomputed on activations from a partially-quantized model,
-      or against leave-one-block-quantized ppl deltas. Would turn the
-      negative into a mechanism. (NEW 2026-09-21) — HARNESS LANDED
-      2026-09-21 (commit c7aa8b6): `ppl.py --sensitivity-mechanism
-      SCHEME` (leave_one_out_ppl + trace_on_quantized + spearman_rho,
-      415 tests green); the full 12-block measurement run is in flight.
-- [ ] Quant R&D: activation-drift probe, scheme-specificity check —
-      repeat `--sensitivity-mechanism` with ternary_1step (the second
-      datapoint's base scheme) if the ternary_1step_ds run shows an
-      interesting rho pattern; a divergent result would say the drift
-      mechanism is scheme-dependent, a matching one that it is generic
-      to sub-2-bit group-wise quantization. (NEW 2026-09-21)
+      ANSWERED 2026-09-21 (harness landed commit c7aa8b6:
+      `ppl.py --sensitivity-mechanism SCHEME` — leave_one_out_ppl +
+      trace_on_quantized + spearman_rho, 415 tests green; full 12-block
+      run completed this session with ternary_1step_ds, g128,
+      eval_text1). The verdict is STRONGER than the drift hypothesis:
+      **rho(fp32-trace, leave-one-out damage) = -0.035** — the fp32
+      ranking never predicted block-wise damage AT ALL (it isn't a valid
+      ranking that quantization then invalidates). Block 0 is the
+      cleanest proof: LEAST sensitive by fp32 trace (180633) yet MOST
+      damaging when quantized alone (ppl 1061.85, +1008 delta) — the
+      first block's errors cascade through all 11 downstream blocks,
+      which a local trace measure fundamentally cannot see. Block 11 is
+      the one case the ranking gets right-ish (most sensitive 767860,
+      second-most damaging 143.65). rho(fp32-trace,
+      quantized-activation trace) = +0.217 — quantization also shifts
+      the trace ranking (weakly tracks). Honest read: fp32-trace-guided
+      bit allocation was unprincipled from the start, not just drifted;
+      the sensitivity-adaptive negative needed no drift to lose. Thread
+      CLOSED. (Determinism note: blocks 0-5 of a previous-session run
+      killed at block 5 reproduced bit-identically in the re-run.)
+      Caveats: collapse territory (directional), calibration on the eval
+      text, GPT-2 124M scale.
+- [x] Quant R&D: activation-drift probe, scheme-specificity check —
+      DECIDED AGAINST 2026-09-21: the ternary_1step_ds run answered the
+      mechanism question decisively (rho_damage = -0.035 — the fp32
+      ranking never predicted damage, so there is no scheme-dependent
+      drift pattern left to test). A second scheme's damage ranking
+      would test whether DAMAGE is scheme-dependent, not whether the
+      fp32 ranking is valid — and that doesn't change the verdict that
+      fp32-trace-guided allocation was unprincipled. Fidelity thread
+      fully closed; no more session time on it.
 - [x] Quant R&D: sweep outlier_frac / n_outliers for the Pareto frontier
       (SQNR vs bpw) — landed 2026-09-20 as `src/quant_rnd/sweep.py`
       (seed 7). Frontier: ternary family below ~2.06 bpw (ternary_uniform
@@ -652,19 +670,28 @@ measuring where quality actually breaks.
       no option is 70B-dense quality; "70B-class" must be measured vs
       dense models that fit 16 GB, not assumed. Recommended Mac
       validation order in the survey note.
-- [ ] Mac-side: Qwen3.5-35B-A3B UD-IQ2_XXS (10.66 GB measured) — measure
-      tok/s + quality (MMLU subset) on the M1 Pro per the rung-3 recipe
-      (research/recipes/RUNG3_qwen3_5_35b_a3b_moe.md); compare vs the oQ2
-      64% MMLU datapoint (needs Justin's Mac). NOTE 2026-09-21 pm: the
-      survey's "IQ2_M 10.6 GB" figure was wrong — HF tree API re-measure:
-      IQ2_M = 11.39 GB (does not fit the ~11 GB budget), IQ2_XXS =
-      10.66 GB. The rung-3 file is now IQ2_XXS, not IQ2_M.
-- [ ] Rung-3 Mac-side validation — run the rung-3 recipe end to end on
-      Justin's Mac (download, Ollama Modelfile, measure_rung.py --target
-      15); record measured tok/s, which tuning steps were needed, and the
-      quality-sanity outcome. The IQ2_XXS-vs-dense-8B quality-per-GB
-      comparison (MMLU subset or fixed task battery) is the follow-up
-      measurement that decides whether the rung means anything.
+- [x] Mac-side: Qwen3.5-35B-A3B UD-IQ2_XXS (10.66 GB measured) — VALIDATED
+      2026-09-21 ~17:42 PDT (Justin): `measure_rung.py --model qwen35-35b-a3b
+      --target 10 --num-ctx 2048` (Ollama 0.34.2) → 34.46 / 34.83 / 32.15
+      tok/s, mean decode **33.81 tok/s**, quality sanity PASS (arithmetic,
+      factual, repeat-3x). MoE sparsity delivers: ~3x the speed of dense
+      14B at ~2.6x the weight budget. NOTE: the 19-prompt battery was run
+      on the canonical -full entry after the IQ2_XXS entry wedged (see
+      rung-3 item); canonical rung-3 model = qwen35-35b-a3b-full. NOTE
+      2026-09-21 pm: the survey's "IQ2_M 10.6 GB" figure was wrong — HF
+      tree API re-measure: IQ2_M = 11.39 GB (does not fit the ~11 GB
+      budget), IQ2_XXS = 10.66 GB. The rung-3 file was IQ2_XXS, not IQ2_M.
+- [x] Rung-3 Mac-side validation — VALIDATED 2026-09-21 ~18:40 PDT
+      (Justin): qwen35-35b-a3b-full (canonical entry after the IQ2_XXS
+      entry wedged) → measure_rung 22.54 / 27.83 / 33.64, mean decode
+      **28.00 tok/s**; quality sanity PASS; 19-prompt battery **15/19
+      nominal (~17/19 effective** — honesty 0/2 is checker pedantry: the
+      accord was correctly identified as nonexistent, the Nobel correctly
+      noted as not yet awarded). Intelligence verdict vs rung 2 (14B): at
+      least as smart, genuine wins (bat-and-ball correct, honesty
+      calibration), but not yet decisively smarter across the board — the
+      two multi-step math failures are identical on both models. RUNG 3
+      STATUS: ACHIEVED (reliable, 28 tok/s, quality pass).
 - [ ] Mac-side: mtrpires mixed-IQK (11.38 GB) — does it hold under memory
       pressure with q4_0 KV cache at 8–12k ctx? (needs Justin's Mac)
 - [x] Hearth: documented rung-3 recipe/profile for the 35B-A3B — LANDED
@@ -922,16 +949,10 @@ measuring where quality actually breaks.
       (795.96 vs 1085.61 at g256), and the current decode ratios (1.36x
       sym / 1.27x dual) are already computed against int2_kmeans_q8 at
       g128 — the reference config stands.
-- [ ] Rung-1 Mac-side validation — RECIPE READY 2026-09-21:
-      `research/recipes/RUNG1_qwen3_8b_20tps.md` + `tools/measure_rung.py`
-      (282 tests green incl. 23 new). On Justin's Mac: `ollama pull
-      qwen3:8b`, then `python3 tools/measure_rung.py --model qwen3:8b
-      --target 20`. Expected RAM ~5.6-6.0 GB (fitcheck: 4.9 GB weights +
-      0.3 GB KV @ 2048 ctx); roofline ~40 tok/s so 20 is expected but only
-      the measurement counts. Pass = mean decode >= 20 tok/s + 3 quality
-      sanity checks. Tuning ladder in the recipe (Metal offload check,
-      --num-ctx 2048, OLLAMA_KV_CACHE_TYPE=q8_0). Paste the script output
-      back as the measurement record.
+- [x] Rung-1 Mac-side validation — VALIDATED 2026-09-21 (Justin, his M1
+      Pro): qwen3:8b at 20 tok/s. Rung 1 DONE per standing direction. Recipe
+      at `research/recipes/RUNG1_qwen3_8b_20tps.md`, harness
+      `tools/measure_rung.py` (282 tests green incl. 23 new).
 - [x] Rung-2 recipe: 14B-class at 20 tok/s — LANDED 2026-09-21 as
       `research/recipes/RUNG2_qwen3_14b_20tps.md` (roofline 200/9.0 ≈
       22 tok/s — TIGHT, expect tuning), `tests/test_rung_recipes.py` pins
@@ -940,14 +961,16 @@ measuring where quality actually breaks.
       qwen3:14b profile est_gb corrected 8.6 -> 9.0 (14.7B params x
       4.9 bpw). measure_rung.py needed no new knobs (--num-ctx/--target
       already exist).
-- [ ] Rung-2 Mac-side validation — run the rung-2 recipe on Justin's Mac;
-      record measured tok/s + which tuning steps were needed.
-- [ ] Rung-2 fallback candidates (CONDITIONAL — only if rung-2 misses 20
-      tok/s at Q4_K_M after the tuning ladder): qwen3:14b at Q4_K_S
-      (~8.0 GB, ceiling ≈ 25 tok/s) / Q4_0 (~8.3 GB, ≈ 24 tok/s), or
-      IQ3_M (~6.8 GB, ceiling ≈ 29 tok/s — quality at 3.7 bpw
-      unverified); each needs the quality sanity re-run + a fitcheck
-      entry before it counts as a rung.
+- [x] Rung-2 Mac-side validation — ACHIEVED 2026-09-21 (Justin):
+      qwen3:14b Q4_K_M measured 13.0 tok/s on his Mac, 100% GPU, quality
+      sanity all pass — usable speed, speed tuning deferred per the
+      standing direction. Rung 2 DONE.
+- [x] Rung-2 fallback candidates — SUPERSEDED 2026-09-21: rung 2 is
+      DONE at usable speed (13.0 tok/s) per the standing direction, which
+      replaced the assistant's 20 tok/s construct with "~10+ tok/s usable"
+      — the conditional (miss after tuning ladder) never fired and the
+      fallbacks are moot. If rung-2 quality (not speed) ever becomes the
+      question, the ladder moves up to rung 3, not sideways.
 - [ ] Quant R&D: vectorize the ternary Lloyd-fit encoder — currently a
       pure-Python per-group loop at ~2 Mparams/s (full-model
       ternary_1step ≈ 45 s, ternary_lloyd n_iter=20 ≈ 2 min). The
