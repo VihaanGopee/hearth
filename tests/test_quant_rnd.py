@@ -17,6 +17,7 @@ from src.quant_rnd import (
     quantize_dual_scale_ternary,
     quantize_int2_kmeans,
     quantize_int2_kmeans_q8,
+    quantize_int4_kmeans_q8,
     quantize_int2_symmetric,
     quantize_int4_uniform,
     quantize_int8_uniform,
@@ -79,6 +80,7 @@ class TestSchemes(unittest.TestCase):
                           "int2_symmetric", "int8_uniform", "int4_uniform",
                           "int2_kmeans",
                           "int2_kmeans_q8",
+                          "int4_kmeans_q8",
                           "int2_outlier_retain", "dual_scale_ternary",
                           "ternary_outlier"})
 
@@ -270,6 +272,71 @@ class TestSchemes(unittest.TestCase):
         s_q8 = sqnr_db(self.w, q8.reconstruct())
         self.assertLessEqual(s_q8, s_fp16)
         self.assertLess(s_fp16 - s_q8, 0.1)
+
+    def test_int4_kmeans_q8_codes_valid(self):
+        q = quantize_int4_kmeans_q8(self.w)
+        self.assertTrue(set(np.unique(q.codes)) <= set(range(16)))
+
+    def test_int4_kmeans_q8_bpw(self):
+        # 4-bit payload + 16 int8 centroids + one fp16 codebook scale
+        # per 128-group = 5.125 bpw.
+        q = quantize_int4_kmeans_q8(self.w)
+        self.assertAlmostEqual(q.bpw, 4.0 + 16 * 8 / 128 + 16 / 128,
+                               places=6)
+        self.assertEqual(q.scales.shape, (8, 16))
+        self.assertEqual(q.name, "int4_kmeans_q8")
+
+    def test_int4_kmeans_q8_deterministic(self):
+        a = quantize_int4_kmeans_q8(self.w)
+        b = quantize_int4_kmeans_q8(self.w)
+        self.assertTrue(np.array_equal(a.codes, b.codes))
+        self.assertTrue(np.array_equal(a.scales, b.scales))
+
+    def test_int4_kmeans_q8_reconstruct_is_codebook_lookup(self):
+        q = quantize_int4_kmeans_q8(self.w)
+        r = q.reconstruct()
+        n = self.w.shape[0]
+        group_id = np.arange(n) // 128
+        expected = q.scales[group_id, q.codes.astype(int)]
+        self.assertTrue(np.allclose(r, expected))
+
+    def test_int4_kmeans_q8_beats_int4_uniform_sqnr(self):
+        # The probe's motivation: a FITTED 4-bit codebook should beat
+        # naive uniform int4 on SQNR. (Whether that buys perplexity on
+        # the tied head is what the ppl probe measures; this just pins
+        # the scheme is strictly better at the bench level.)
+        f = quantize_int4_kmeans_q8(self.w)
+        u = quantize_int4_uniform(self.w)
+        self.assertGreater(sqnr_db(self.w, f.reconstruct()),
+                           sqnr_db(self.w, u.reconstruct()))
+
+    def test_kmeans_q8_rejects_bad_n_bits(self):
+        from src.quant_rnd.schemes import _quantize_kmeans_q8
+        with self.assertRaises(ValueError):
+            _quantize_kmeans_q8(self.w, 128, 20, None, n_bits=3,
+                                name="bad")
+
+    def test_kmeans_q8_chunked_is_bit_identical(self):
+        # The (chunk, group, k) assignment temp is capped to avoid OOM on
+        # big tensors; chunking must not move a single code.
+        from src.quant_rnd.schemes import _quantize_kmeans_q8
+        rng = np.random.default_rng(11)
+        w = rng.standard_normal(40 * 128).astype(np.float32)
+        whole = _quantize_kmeans_q8(w, 128, 20, None, n_bits=4,
+                                    name="int4_kmeans_q8",
+                                    chunk_groups=1 << 30)
+        chunked = _quantize_kmeans_q8(w, 128, 20, None, n_bits=4,
+                                      name="int4_kmeans_q8",
+                                      chunk_groups=7)  # ragged: 40 = 7*5+5
+        self.assertTrue(np.array_equal(whole.codes, chunked.codes))
+        self.assertTrue(np.array_equal(whole.scales, chunked.scales))
+
+    def test_int2_kmeans_q8_delegation_unchanged(self):
+        # The refactor must not move the published anchors: int2_kmeans_q8
+        # keeps its name, bpw, and exact codes on the bench tensor.
+        q = quantize_int2_kmeans_q8(self.w)
+        self.assertEqual(q.name, "int2_kmeans_q8")
+        self.assertAlmostEqual(q.bpw, 2.375, places=6)
 
     def test_int2_kmeans_q8_still_beats_ternary_outlier(self):
         # The session's key question: at (roughly) matched bitrate, does

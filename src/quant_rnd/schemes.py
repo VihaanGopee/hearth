@@ -104,7 +104,8 @@ class QuantResult:
 
 # Schemes whose `scales` hold an effective per-group codebook that the
 # integer `codes` index into (rather than multiplicative scales).
-_CODEBOOK_SCHEMES = frozenset({"int2_kmeans", "int2_kmeans_q8"})
+_CODEBOOK_SCHEMES = frozenset({"int2_kmeans", "int2_kmeans_q8",
+                               "int4_kmeans_q8"})
 
 # Schemes whose `scales` hold (s_pos, s_neg): code +1 decodes as s_pos,
 # code -1 as -s_neg.
@@ -347,6 +348,54 @@ def quantize_int2_kmeans(w: np.ndarray, group_size: int = GROUP_SIZE,
                        group_size=group_size)
 
 
+def _quantize_kmeans_q8(w: np.ndarray, group_size: int, n_iter: int,
+                       sample_weight: np.ndarray | None, n_bits: int,
+                       name: str, chunk_groups: int = 16384) -> QuantResult:
+    """Lloyd k-means with an 8-bit-stored codebook, generalized over bit width.
+
+    Per-group Lloyd fit with k = 2**n_bits centroids, stored in 8-bit
+    (symmetric, one fp16 codebook scale per group) - the storage trick real
+    codebook quants (llama.cpp IQ) use. Code assignment is against the
+    stored (rounded) codebook, as an honest encoder would; the returned
+    scales hold the DEQUANTIZED centroids so reconstruct() measures exactly
+    what a real decoder sees. n_bits is 2 or 4 (the widths with published
+    anchor numbers); anything else raises ValueError.
+
+    `chunk_groups`: the code-assignment broadcast is (chunk, group, k)
+    float32 - at k=16 on a 38.6M-param embedding table the unchunked
+    (301k, 128, 16) temp is ~2.5 GB and OOMs this VM (2026-09-22). The
+    per-group argmin is row-independent, so chunking is bit-identical;
+    a test pins chunked == unchunked.
+    """
+    if n_bits not in (2, 4):
+        raise ValueError(f"n_bits must be 2 or 4, got {n_bits}")
+    k = 1 << n_bits
+    wp, n_groups, n = _groups(w, group_size)
+    if sample_weight is None:
+        centroids = np.stack([_lloyd_1d(g, k=k, n_iter=n_iter) for g in wp])
+    else:
+        sw = np.asarray(sample_weight).ravel()
+        if sw.shape[0] != n:
+            raise ValueError(f"sample_weight length {sw.shape[0]} != "
+                             f"weights length {n}")
+        swp, _, _ = _groups(sw, group_size)
+        centroids = np.stack([_lloyd_1d(g, k=k, n_iter=n_iter, w=sg)
+                              for g, sg in zip(wp, swp)])
+    # Symmetric 8-bit quantization of the per-group codebook.
+    cmax = np.max(np.abs(centroids), axis=1, keepdims=True).astype(np.float32)
+    cmax = np.maximum(cmax, 1e-12)  # all-zero group guard
+    q8 = np.round(centroids / cmax * 127.0).astype(np.int8)
+    deq = (q8.astype(np.float32) / 127.0 * cmax)
+    code_chunks = []
+    for s in range(0, n_groups, chunk_groups):
+        e = min(s + chunk_groups, n_groups)
+        code_chunks.append(
+            np.abs(wp[s:e, :, None] - deq[s:e, None, :]).argmin(axis=2))
+    codes = np.concatenate(code_chunks).astype(np.int8).ravel()[:n]
+    bpw = float(n_bits) + k * 8 / group_size + _scale_overhead(1, group_size)
+    return QuantResult(name, codes, deq, bpw, group_size=group_size)
+
+
 def quantize_int2_kmeans_q8(w: np.ndarray, group_size: int = GROUP_SIZE,
                             n_iter: int = 20,
                             sample_weight: np.ndarray | None = None) -> QuantResult:
@@ -369,27 +418,24 @@ def quantize_int2_kmeans_q8(w: np.ndarray, group_size: int = GROUP_SIZE,
     the OBQ first slice). sample_weight=None reproduces the unweighted
     fit exactly.
     """
-    wp, n_groups, n = _groups(w, group_size)
-    if sample_weight is None:
-        centroids = np.stack([_lloyd_1d(g, n_iter=n_iter) for g in wp])
-    else:
-        sw = np.asarray(sample_weight).ravel()
-        if sw.shape[0] != n:
-            raise ValueError(f"sample_weight length {sw.shape[0]} != "
-                             f"weights length {n}")
-        swp, _, _ = _groups(sw, group_size)
-        centroids = np.stack([_lloyd_1d(g, n_iter=n_iter, w=sg)
-                              for g, sg in zip(wp, swp)])
-    # Symmetric 8-bit quantization of the per-group codebook.
-    cmax = np.max(np.abs(centroids), axis=1, keepdims=True).astype(np.float32)
-    cmax = np.maximum(cmax, 1e-12)  # all-zero group guard
-    q8 = np.round(centroids / cmax * 127.0).astype(np.int8)
-    deq = (q8.astype(np.float32) / 127.0 * cmax)
-    codes = np.abs(wp[:, :, None] - deq[:, None, :]).argmin(axis=2)
-    codes = codes.astype(np.int8).ravel()[:n]
-    bpw = 2.0 + 4 * 8 / group_size + _scale_overhead(1, group_size)
-    return QuantResult("int2_kmeans_q8", codes, deq, bpw,
-                       group_size=group_size)
+    return _quantize_kmeans_q8(w, group_size, n_iter, sample_weight,
+                               n_bits=2, name="int2_kmeans_q8")
+
+
+def quantize_int4_kmeans_q8(w: np.ndarray, group_size: int = GROUP_SIZE,
+                            n_iter: int = 20) -> QuantResult:
+    """Fitted 4-bit: per-group Lloyd with a 16-centroid 8-bit codebook.
+
+    The remaining refinement after the 2026-09-22 naive-q4 embedding probe
+    (int4_uniform collapsed on the tied wte head: ppl 7730.81 vs 53.50
+    fp32): does a FITTED 4-bit codebook (Lloyd 16-centroid, not naive
+    uniform) survive on the tied head? Same 8-bit codebook storage as
+    int2_kmeans_q8 -> 4 + 16*8/128 + 16/128 = 5.125 bpw @ g128. Kept
+    separate from the uniform int4 scheme name-wise so SQNR/ppl
+    comparisons stay honest about fitted-vs-naive.
+    """
+    return _quantize_kmeans_q8(w, group_size, n_iter, None,
+                               n_bits=4, name="int4_kmeans_q8")
 
 
 def _ternary_lloyd_fit_batch(wp: np.ndarray, dual: bool,
@@ -639,6 +685,7 @@ SCHEMES = {
     "int4_uniform": quantize_int4_uniform,
     "int2_kmeans": quantize_int2_kmeans,
     "int2_kmeans_q8": quantize_int2_kmeans_q8,
+    "int4_kmeans_q8": quantize_int4_kmeans_q8,
     "int2_outlier_retain": quantize_int2_outlier_retain,
     "dual_scale_ternary": quantize_dual_scale_ternary,
     "ternary_outlier": quantize_ternary_outlier,
