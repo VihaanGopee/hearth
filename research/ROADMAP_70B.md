@@ -722,9 +722,29 @@ measuring where quality actually breaks.
       MLX 2-bit ~20% at 10 GB on the same table). The 9.0-vs-11.67 gap is
       unresolved (likely text-only vs vision-tower-included accounting —
       the 3.6 JANGTQ card ships 333 fp16 vision tensors). Borderline over
-      the ~11 GB budget fully resident → Smelt or text-only strip. Mac-side:
-      verify the 9.0 GB figure, run our battery (not their MMLU claim),
-      compare vs IQ2_XXS GGUF rung-3 and oQ2 rung-4. This is the leading
+      the ~11 GB budget fully resident → Smelt or text-only strip.
+      PROBE 2026-09-22 (am, safetensors-header probe via HTTP Range only,
+      no weight download): the gap is now MEASURED, not hypothesized.
+      Full file = **11.65 GB** (10.75 GB text + 0.89 GB vision, 333
+      tensors) — vision stripping explains only 0.89 of the 2.65 GB gap;
+      the rest is real: **9.64 GB packed U32 weights + 2.01 GB F16
+      scales/metadata** (1611 tensors; JANG_2S is mixed 2/4/6-bit at
+      actual 2.17 bpw per jang_config.json). The card's 9.0 GB is the
+      quantizer's own `total_weight_gb: 8.98` runtime accounting in
+      jang_config.json — a theoretical figure that matches neither the
+      on-disk 11.65 GB nor even the 9.64 GB packed payload alone. The
+      card's size column is stale/optimistic across the board (its
+      JANG_4K 16.4 GB row vs 19.67 GB measured on the 3.6 upload).
+      Budget verdict TIGHTENED: 10.75 GB text-only + ~1 GB runtime + KV
+      > ~11 GB usable → fully resident is a NO even stripped; needs
+      Smelt (if the server parses JANG_2S) or the jang_tools path with
+      the vision tower dropped. Mac-side resident-RAM measurement is the
+      arbiter — do not trust the card's 9.0. Loader:
+      `jang_tools.loader.load_jang_model` (pip install "jang[mlx]");
+      card states LM Studio / Ollama / oMLX / Inferencer do NOT support
+      JANG yet — vMLX / MLX Studio are the serving paths.
+      Mac-side: run our battery (not their MMLU claim), compare vs
+      IQ2_XXS GGUF rung-3 and oQ2 rung-4. This is the leading
       rung-3 fallback if IQ2_XXS quality disappoints.
 - [ ] Quant R&D: JANGQ-AI/Qwen3.6-35B-A3B-JANGTQ candidate — NEW
       2026-09-21 (pm sweep): "TurboQuant" codebook 2-bit routed experts
