@@ -273,10 +273,30 @@ measuring where quality actually breaks.
       >= 8-bit. Supersedes the old note about naive low-bit embedding
       probes; per-row-scaled is a refinement, not a question (see new
       follow-up below).
-- [ ] Quant R&D: q4 / per-row-scaled embedding probe — refinement of the
-      answered wte item: is there a bitrate between 2-bit (collapse) and
-      q8 (54.76) where the tied head survives? Only worth a session if a
-      Mac recipe needs sub-8-bit embeddings (low priority).
+- [x] Quant R&D: q4 / per-row-scaled embedding probe — ANSWERED NO
+      2026-09-22 (commit e448be2, 447 tests green). New scheme
+      `int4_uniform` (symmetric 15-level per-group, absmax/7, one fp16
+      scale/group -> 4.125 bpw @ g128). Measured GPT-2 124M, eval_text1,
+      g128, fp32 ref 53.50, wte-only:
+      **int4_uniform -> 7730.81 (144x — collapse)** vs int8_uniform ->
+      54.76 (reproduces the 2026-09-21 figure exactly). Honest negative:
+      there is NO survivable midpoint for the tied head under naive
+      per-group uniform quantization — the Mac-relevant rule ("keep
+      embedding/lm_head tables at >= 8-bit") is confirmed and tightened:
+      the cliff is between 4 and 8 bits. Side fix the probe exposed:
+      `--only-names wte.weight` WITHOUT `--quantize-embeddings` silently
+      selected zero targets and crashed the report printer on bpw=None
+      after a full quantize+forward cycle — `quantize_model` now raises
+      ValueError fail-fast with the --quantize-embeddings hint (2 new
+      tests; docstring updated).
+- [ ] Quant R&D: fitted-4-bit (Lloyd 16-centroid) embedding probe — the
+      q4-uniform negative leaves one refinement open: does a FITTED 4-bit
+      codebook (not naive uniform) survive on the tied wte head? Would
+      need a new 16-centroid scheme (int2_kmeans machinery exists for 4
+      centroids; 16-centroid generalization + tests) and one ~40 s probe
+      run. Low priority: naive-uniform is what shipping quants actually
+      do to embeddings, and the >=8-bit rule already guides recipes.
+      (NEW 2026-09-22)
 - [x] Quant R&D: layer-wise mixed-precision harness — LANDED 2026-09-21
       as `ppl.py --per-layer-schemes SPEC` (explicit per-block assignment,
       e.g. "0-5:int8_uniform,6-11:ternary_1step") and
