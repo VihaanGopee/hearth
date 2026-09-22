@@ -469,8 +469,41 @@ measuring where quality actually breaks.
       turns vs Ollama's server-side tool calling; if unreliable, consider
       wiring `mlx_lm.server` (OpenAI-compatible, localhost:8080) as the
       transport instead of the Python API (needs Justin's Mac)
-- [ ] Hearth: documented MLX recipe for the 35B-A3B (oQ2/JANG MLX quant
-      via the `mlx` backend block or as the cascade big model)
+- [x] Hearth: documented MLX recipe for the 35B-A3B — LANDED 2026-09-21
+      as `research/recipes/RUNG4_oq2_35b_smelt.md` (rung-4 ladder recipe:
+      Jundot/Qwen3.6-35B-A3B-oQ2 13.10 GB measured via HF tree API;
+      arch from config.json text_config — 40 layers, GQA-2 KV heads,
+      head_dim 256, full_attention_interval=4 (10 KV layers), 256 experts
+      8+shared; quant layout measured from quantization_config: routed
+      experts 2-bit g64, linear_attn 4-6 bit, self_attn/shared/embeds/
+      lm_head 8-bit; 333-tensor vision tower present, text-only under
+      smelt; NO mtp tensors in the weights despite mtp_num_hidden_layers=1
+      — no MTP speculative path). fitcheck gained arch `qwen3.6-35b-a3b`
+      + `moe_expert_gb()` (8.05 GB routed experts) + `smelt_resident()`
+      (smelt-50 -> 9.07 GB weights, ~10.1 GB total, fits ~11 GB; smelt-25
+      -> 7.06 GB, ~8.1 GB total); 8 new recipe-consistency tests, 325
+      green. Honest correction folded in: the oQ2 profile's old "~7 GB
+      resident est." is now the computed ~10.1 GB. The recipe's vmlx path
+      is NOT the `mlx` backend (mlx-lm cannot load oQ2's affine format)
+      and NOT a cascade big model yet — both need the OpenAI-compatible
+      transport item below; the recipe documents that explicitly.
+- [ ] Hearth: OpenAI-compatible HTTP backend (vmlx / mlx_lm.server
+      transport) — NEW 2026-09-21, unblocks the rung-4 recipe's Hearth
+      wiring (cascade big = vmlx-served oQ2-smelt) AND the MLX
+      tool-calling follow-up (mlx_lm.server instead of the text-based
+      fallback). `vmlx serve` is OpenAI-compatible; Hearth currently has
+      no such backend.
+- [ ] tools/measure_openai.py — generalize the rung harness to
+      OpenAI-compatible endpoints (vmlx, mlx_lm.server): same 3 speed
+      prompts + 3 sanity checks + streamed-token timing, so rungs 4+ are
+      measurable with the same protocol as rungs 1-3 (NEW 2026-09-21;
+      the RUNG4 recipe currently carries a manual snippet instead).
+- [ ] Track: oQ2 64% MMLU figure is measured on the 3.5 variant (oMLX
+      docs); the Jundot 3.6 variant is unmeasured — the Mac-side battery
+      score vs rung 3 is the measurement, not this figure (NEW 2026-09-21).
+- [ ] Mac-side: verify whether `vmlx serve` accepts an HF repo id directly
+      or needs a local snapshot dir (the RUNG4 recipe downloads first —
+      note which form was used) (NEW 2026-09-21).
 - [ ] Benchmark harness: quality-vs-quant curves on small models to validate the pipeline
 - [ ] Track BitNet.cpp releases + any 70B ternary model announcement
 - [ ] Track oQ/JANG releases and 2-bit MoE quality reports

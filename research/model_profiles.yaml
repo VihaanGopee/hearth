@@ -92,9 +92,13 @@ profiles:
       group 64, MLX safetensors). 13.10 GB MEASURED 2026-09-21 via the
       HF tree API (repo Jundot/Qwen3.6-35B-A3B-oQ2, uploaded 2026-04-23;
       corrects the stale 8.8 GB estimate). Over the ~11 GB usable budget
-      fully resident — the fit story is vmlx --smelt 50 (~7 GB resident
-      est., needs Mac-side measurement). Best-benchmarked ~2-bit quality:
-      64% MMLU vs 14% naive (oMLX docs). Requires the MLX backend.
+      fully resident — the fit story is vmlx --smelt 50 (~10.1 GB
+      resident est., needs Mac-side measurement). Best-benchmarked ~2-bit
+      quality: 64% MMLU vs 14% naive (oMLX docs; measured on the 3.5
+      variant — the 3.6 variant is unmeasured). Rung-4 ladder candidate:
+      recipe at research/recipes/RUNG4_oq2_35b_smelt.md. Requires vmlx
+      (OpenAI-compatible serve); Hearth's `mlx` backend cannot load the
+      oQ2 affine format.
 
   - name: qwen3-30b-a3b-Q3_K_M
     params_b: 30
