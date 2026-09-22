@@ -493,6 +493,15 @@ measuring where quality actually breaks.
       non-speculative baseline, at matched quant; quantify the realized
       decode speedup vs the opcount ceiling ratios (decode is
       bandwidth-bound, so acceptance rate decides).
+- [ ] Mac-side: vmlx speculative decoding — the vmlx README (doc-checked
+      2026-09-22) exposes server-side `--speculative-model <model>`
+      (draft model, 20-90% speedup claimed) and `--enable-pld` (prompt
+      lookup decoding, no draft model — "best for structured or
+      repetitive output: code, JSON, schemas"). Once the rung-4 oQ2
+      Smelt path is measured, quantify decode tok/s with PLD on/off and
+      with a small draft model at matched quant; this is the rung-4
+      speed-optimization layer via the vmlx transport, complementing the
+      llamacpp-backend speculative item above. (NEW 2026-09-22)
 - [x] Model cascade: small fast model by default, escalate hard queries to
       the big model — LANDED 2026-09-21 as `src/cascade.py` + opt-in
       `backend: cascade` config (commit 6eb10d8, 236 tests green). Two
@@ -592,9 +601,16 @@ measuring where quality actually breaks.
 - [ ] Track: oQ2 64% MMLU figure is measured on the 3.5 variant (oMLX
       docs); the Jundot 3.6 variant is unmeasured — the Mac-side battery
       score vs rung 3 is the measurement, not this figure (NEW 2026-09-21).
-- [ ] Mac-side: verify whether `vmlx serve` accepts an HF repo id directly
-      or needs a local snapshot dir (the RUNG4 recipe downloads first —
-      note which form was used) (NEW 2026-09-21).
+- [x] Mac-side: verify whether `vmlx serve` accepts an HF repo id directly
+      or needs a local snapshot dir — ANSWERED YES 2026-09-22 (doc check,
+      no Mac needed): vmlx README says "Point it at a HuggingFace repo or
+      local path and go" (quickstart: `vmlx serve
+      mlx-community/Qwen3-8B-4bit`; distributed example: `vmlx serve
+      JANGQ-AI/... --distributed`). RUNG4 recipe updated: serve
+      `Jundot/Qwen3.6-35B-A3B-oQ2` straight from the repo id, download
+      step dropped (snapshot fallback documented). Related correction
+      folded into the recipe: vmlx's CLI server defaults to port 8000,
+      not the measure_openai.py 8080 default. (NEW 2026-09-21)
 - [x] tools/eval_battery.py — OpenAI-compatible transport for the 19-prompt
       battery, so rung 4+ (vmlx / mlx_lm.server) can be scored with the same
       checks as rungs 1-3. LANDED 2026-09-21 as
@@ -792,9 +808,16 @@ measuring where quality actually breaks.
 - [ ] Mac-side: verify whether vmlx parses the JANGTQ mxtq/TurboQuant
       layout — JANGTQ's only sub-16GB path is Smelt or the jang_tools
       loader, and vmlx documents JANG profiles (JANG_2M/2L/3M/4M/6M),
-      not mxtq. If vmlx can't serve it, the fallback ladder for JANGTQ
-      is jang_tools-only (no Smelt paging). Check before any JANGTQ
-      validation attempt. (NEW 2026-09-22)
+      not mxtq. DOC CHECK 2026-09-22 (README, jjang-ai/vmlx): the JANG
+      Profiles section lists ONLY JANG_2M/2L/3M/4M/6M (attn 8-bit,
+      embeds 3-6-bit, MLP 2-6-bit) — no mxtq, no JANGTQ, no TurboQuant
+      mention anywhere; Smelt "requires an MoE model in JANG format"
+      and is "not compatible with ... non-JANG formats". Default
+      assumption is now: vmlx does NOT parse the mxtq layout — JANGTQ
+      stays jang-tools-only (load_jangtq_model, no Smelt paging) until a
+      Mac-side test proves otherwise. If vmlx can't serve it, the
+      fallback ladder for JANGTQ is jang_tools-only. Check on the Mac
+      before any JANGTQ validation attempt. (NEW 2026-09-22)
       against our own opcount/SQNR numbers. NOTE 2026-09-22: the vmlx
       org also ships jjang-ai/mlxstudio, a Mac app with first-class
       JANG-format support (per its README) — a GUI alternative to the

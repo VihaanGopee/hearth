@@ -16,14 +16,16 @@ vs rung 3 (`qwen35-35b-a3b`), not the pass/fail line.
 
 `Jundot/Qwen3.6-35B-A3B-oQ2` — **measured 13.10 GB** via the HF tree API
 2026-09-21 (3 shards: 5.03 + 5.03 + 3.02 GB; oMLX v0.3.7, 2-bit affine,
-group 64, MLX safetensors). On the Mac (do **not** download this on the
-dev VM):
+group 64, MLX safetensors).
 
-```bash
-pip install -U "huggingface_hub[cli]"
-huggingface-cli download Jundot/Qwen3.6-35B-A3B-oQ2 \
-  --local-dir ~/models/Qwen3.6-35B-A3B-oQ2
-```
+No manual download needed: `vmlx serve` accepts an HF repo id directly
+(vmlx README: "Point it at a HuggingFace repo or local path and go";
+quickstart example `vmlx serve mlx-community/Qwen3-8B-4bit`; distributed
+example `vmlx serve JANGQ-AI/Qwen3.5-Coder-Rerank-397B-A27B-JANG_2L` —
+doc-checked 2026-09-22). Skip the snapshot entirely and serve straight
+from the repo id. (If you want a pinned local snapshot instead:
+`huggingface-cli download Jundot/Qwen3.6-35B-A3B-oQ2 --local-dir
+~/models/Qwen3.6-35B-A3B-oQ2`, then point `vmlx serve` at the dir.)
 
 ## Measured architecture (config.json text_config, HF raw fetch 2026-09-21)
 
@@ -79,12 +81,11 @@ the M1 Pro number is what the measurement below produces.
 
 ```bash
 pip install "vmlx[jang]"
-vmlx serve ~/models/Qwen3.6-35B-A3B-oQ2 --smelt --smelt-experts 50
+vmlx serve Jundot/Qwen3.6-35B-A3B-oQ2 --smelt --smelt-experts 50
 ```
 
-(If `vmlx serve` accepts an HF repo id directly, the download step can be
-skipped — verify and note which form was used. Default when `--smelt` is
-passed alone is 50.)
+(HF repo id goes straight into `vmlx serve` — doc-verified 2026-09-22.
+Default when `--smelt` is passed alone is 50.)
 
 ## Measure speed (OpenAI-compatible endpoint)
 
@@ -94,9 +95,11 @@ rung protocol (3 speed prompts + 3 quality sanity checks + PASS/FAIL
 report), but with streamed-token timing against `/v1/chat/completions`:
 
 ```bash
-python3 tools/measure_openai.py --model Qwen3.6-35B-A3B-oQ2 --target 10
+python3 tools/measure_openai.py --model Qwen3.6-35B-A3B-oQ2 --target 10 \
+  --base-url http://localhost:8000
 # --base-url accepts root, /v1, or the full chat/completions path
-# (default http://localhost:8080); --api-key or OPENAI_API_KEY if needed
+# (vmlx's CLI server default is port 8000, not the tool's 8080 default);
+# --api-key or OPENAI_API_KEY if needed
 ```
 
 Token counts come from the stream's `usage.completion_tokens` when the
