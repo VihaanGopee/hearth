@@ -139,8 +139,9 @@ measuring where quality actually breaks.
       on both clean and skewed tensors, and Lloyd is skew-invariant. Don't
       chase SQNR parity with Lloyd. Part (b) is now the main thread:
       quantify the ternary compute advantage and aim the ggml kernel
-      work there. Part (b) QUANTIFIED 2026-09-20 (`src/quant_rnd/opcount.py`):
-      ternary_uniform 1.36x higher decode ceiling + 3.0x lower
+      work there. Part (b) QUANTIFIED 2026-09-20 (`src/quant_rnd/opcount.py`),
+      CORRECTED 2026-09-22 to packable storage rates: fitted ternary
+      (ternary_1step) 1.11x higher decode ceiling + 3.5x lower
       energy-proxy op cost vs int2_kmeans_q8 at 70B scale (see checked
       op-count item below); next: Mac-side validation, prefill roofline.
 - [x] Quant R&D: does the synthetic SQNR ranking reproduce on real weights
@@ -399,7 +400,14 @@ measuring where quality actually breaks.
       int2_kmeans_q8 (2.375 bpw, histogram dequant): 20.78 GB, roofline
       9.0 t/s, 2.17 equiv-adds/weight.
       => **1.36x higher decode ceiling, 3.0x lower energy-proxy op cost**
-      for ternary over the Lloyd reference. All schemes are
+      for ternary over the Lloyd reference (2026-09-20 figures, used
+      the entropy bpw as the byte rate). CORRECTION 2026-09-22: with
+      packable storage rates (fitted ternary_1step 2.125 @ g128 vs
+      k-means-q8 2.375): 18.59 GB / 10.0 t/s vs 20.78 GB / 9.0 t/s =>
+      **1.11x decode edge**; energy-proxy ratio ~3.5x (op-driven,
+      unaffected). Dual-scale ternary_1step_ds: 2.25 storage -> 1.05x.
+      The "bpw-driven byte reduction" line above was the overstatement;
+      decode still favors ternary, but only slightly. All schemes are
       bandwidth-bound (2.8-7.7 FLOP/byte vs ~10 machine balance), so the
       bpw-driven byte reduction is the first-order effect; the add/sub
       MAC advantage is second-order on decode, first-order in
@@ -475,12 +483,16 @@ measuring where quality actually breaks.
       compute-bound (1.795x) ratios are op-driven and survive. Budget
       consequence: 18.59 GB is further over the 10–11 GB budget — avenue C
       stays closed, more firmly.
-- [ ] Quant R&D: opcount storage-bpw correction — add a packable
-      `storage_bpw` notion to `src/quant_rnd/opcount.py`'s scheme_report
-      (ternary family: 2.0 + scale overhead, not log2(3) entropy) and
-      re-pin the decode figures; expected shift 1.36x -> ~1.11x decode
-      ratio vs int2_kmeans_q8. Keep entropy bpw for the SQNR/PPL
-      comparisons. (NEW 2026-09-22, from the kernel design doc)
+- [x] Quant R&D: opcount storage-bpw correction — LANDED 2026-09-22:
+      `scheme_report` gains an optional `storage_bpw` (defaults to bpw;
+      back-compat — codebook schemes already pass true storage rates),
+      driving weight_GB, roofline_tps, and flops_per_byte; entropy bpw
+      stays the SQNR/PPL comparison rate. New `ternary_storage_bpw()`
+      (2.0 + 16*n_scales/group_size: 2.125 @ g128, 2.25 dual) exported
+      from src/quant_rnd; print_report shows a `stor` column. Decode
+      figures re-pinned (tests): ternary_1step 1.110x (was 1.357x),
+      dual 1.052x (was 1.272x) vs int2_kmeans_q8; energy proxy and op
+      counts untouched. Suite 484 green.
 - [ ] Quant R&D: fitted-ternary encoder emitting the TQ1_0 packing
       (llama.cpp discussion/PR) — a 1-step Lloyd fit as a drop-in quality
       uplift for the existing naive-ternary type (+1.37 dB measured at

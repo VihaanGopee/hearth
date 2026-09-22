@@ -7,9 +7,13 @@ two layers:
 
 1. DECODE ROOFLINE (the dominant effect on Apple Silicon). Decode is
    memory-bandwidth-bound: tok/s ~= bandwidth / bytes_per_token. Weight
-   bytes are set by bpw, so a ternary scheme at 1.71-1.84 bpw moves
-   ~17-22% fewer bytes per token than k-means-q8 at 2.188 bpw and gets a
-   proportionally higher decode ceiling -- independent of op counts.
+   bytes are set by the *packable* storage rate, NOT the entropy bpw:
+   a ternary scheme at entropy 1.710 bpw packs to 2 bits/code + fp16
+   scale per group = 2.125 storage bpw at g128, so it moves ~3% (not
+   ~22%) fewer bytes per token than k-means-q8 at 2.375 bpw. The
+   entropy bpw stays the right rate for SQNR/perplexity
+   matched-bitrate comparisons; scheme_report takes an optional
+   storage_bpw (defaults to bpw) so both rates travel together.
 
 2. PER-WEIGHT OP COUNTS (second-order for decode, first-order in
    compute-bound regimes like prefill/large-batch). Ternary MAC =
@@ -180,6 +184,25 @@ def prefill_roofline_tps(n_params: float, bpw: float, opcount: dict,
 
 # --- per-weight op models ---------------------------------------------------
 
+def ternary_storage_bpw(group_size: int = 128, n_scales: int = 1) -> float:
+    """Packable storage rate for a fitted-ternary scheme, bits/param.
+
+    log2(3) ~ 1.585 is the *entropy* rate -- the right denominator for
+    SQNR/perplexity matched-bitrate comparisons -- but no byte-aligned
+    packing stores fractional bits. The packable layout (2-bit codes,
+    4 per byte, + one fp16 scale per group; see
+    research/ternary_kernel_design.md) is 2.0 + 16*n_scales/group_size
+    bits/param: 2.125 at g128 single-scale, 2.25 dual-scale.
+    Pass the result as scheme_report's storage_bpw so decode ceilings
+    use real bytes while "bpw" keeps the entropy comparison rate.
+    """
+    if group_size < 1:
+        raise ValueError("group_size must be a positive integer")
+    if n_scales < 1:
+        raise ValueError("n_scales must be a positive integer")
+    return 2.0 + (16.0 * n_scales) / group_size
+
+
 def ternary_opcount(sparsity: float, n_scales: int = 1,
                     group_size: int = 128, n_outliers: int = 0) -> dict:
     """Per-weight op model for ternary matmul: y += s * sum(+-x).
@@ -260,6 +283,7 @@ def scheme_report(name: str, *, bpw: float, group_size: int = 128,
                   kind: str = "ternary", sparsity: float = 0.0,
                   n_scales: int = 1, n_outliers: int = 0,
                   method: str = "histogram",
+                  storage_bpw: float = None,
                   n_params: float = N_PARAMS_70B,
                   kv_B: float = None,
                   bandwidth_gbs: float = M1_PRO_MEM_BW_GBS,
@@ -269,10 +293,19 @@ def scheme_report(name: str, *, bpw: float, group_size: int = 128,
     kind="ternary" uses ternary_opcount (needs measured sparsity);
     kind="codebook" uses codebook_opcount. Returns weight footprint,
     roofline decode ceiling, op counts, and energy-proxy cost.
+
+    bpw is the entropy/comparison rate (used for SQNR/perplexity
+    matched-bitrate comparisons). storage_bpw is the packable on-disk
+    rate that actually sets weight_GB and the decode ceiling; it
+    defaults to bpw (correct for codebook schemes, whose bpw already
+    counts the stored codebook). For the ternary family pass
+    ternary_storage_bpw(group_size, n_scales) -- entropy bpw overstates
+    the decode edge by ~0.25x if used as the byte rate.
     """
     if kv_B is None:
         kv_B = kv_cache_bytes()
-    w_B = weight_bytes(n_params, bpw)
+    sbpw = bpw if storage_bpw is None else storage_bpw
+    w_B = weight_bytes(n_params, sbpw)
     if kind == "ternary":
         oc = ternary_opcount(sparsity, n_scales, group_size, n_outliers)
     elif kind == "codebook":
@@ -284,6 +317,7 @@ def scheme_report(name: str, *, bpw: float, group_size: int = 128,
     return {
         "scheme": name,
         "bpw": bpw,
+        "storage_bpw": sbpw,
         "weight_GB": w_B / 1e9,
         "roofline_tps": decode_roofline_tps(bandwidth_gbs, w_B, kv_B,
                                             efficiency=efficiency),
@@ -291,17 +325,18 @@ def scheme_report(name: str, *, bpw: float, group_size: int = 128,
         "muls_per_w": oc["muls"],
         "lookups_per_w": oc["lookups"],
         "equiv_adds_per_w": equiv_adds(oc),
-        "flops_per_byte": flops_pw / (bpw / 8.0),
+        "flops_per_byte": flops_pw / (sbpw / 8.0),
     }
 
 
 def print_report(rows: list) -> None:
     """Pretty-print a list of scheme_report() dicts."""
-    hdr = (f"{'scheme':<22}{'bpw':>7}{'GB':>8}{'t/s ceil':>10}"
+    hdr = (f"{'scheme':<22}{'bpw':>7}{'stor':>6}{'GB':>8}{'t/s ceil':>10}"
            f"{'adds/w':>8}{'muls/w':>8}{'eq.adds/w':>10}")
     print(hdr)
     for r in rows:
-        print(f"{r['scheme']:<22}{r['bpw']:>7.3f}{r['weight_GB']:>8.2f}"
+        print(f"{r['scheme']:<22}{r['bpw']:>7.3f}{r['storage_bpw']:>6.3f}"
+              f"{r['weight_GB']:>8.2f}"
               f"{r['roofline_tps']:>10.1f}{r['adds_per_w']:>8.3f}"
               f"{r['muls_per_w']:>8.4f}{r['equiv_adds_per_w']:>10.3f}")
 

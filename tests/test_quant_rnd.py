@@ -7,6 +7,8 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 
 import numpy as np
 
@@ -57,8 +59,10 @@ from src.quant_rnd.opcount import (
     prefill_crossover_L,
     prefill_roofline_tps,
     scheme_report,
+    print_report,
     side_fractions,
     ternary_opcount,
+    ternary_storage_bpw,
     weight_bytes,
 )
 
@@ -607,20 +611,25 @@ class TestOpCount(unittest.TestCase):
         # The headline of pivot part (b): with measured sparsity from the
         # real quantizers, ternary_uniform must show BOTH a higher decode
         # ceiling (fewer bytes) AND lower energy-proxy op cost than the
-        # k-means-q8 reference at group 128.
+        # k-means-q8 reference at group 128. The decode ceiling uses the
+        # PACKABLE storage rate (ternary_storage_bpw), not the entropy
+        # bpw: 2.125 vs 2.375 storage -> ~1.11x edge, not the ~1.36x the
+        # entropy rates implied.
         rng = np.random.default_rng(7)
         w = synthetic_weights(rng, n_groups=64)
         qt = quantize_ternary_uniform(w, group_size=128)
         qk = quantize_int2_kmeans_q8(w, group_size=128)
         rt = scheme_report("ternary_uniform", bpw=qt.bpw, kind="ternary",
-                           sparsity=measured_sparsity(qt))
+                           sparsity=measured_sparsity(qt),
+                           storage_bpw=ternary_storage_bpw(128, 1))
         rk = scheme_report("int2_kmeans_q8", bpw=qk.bpw, kind="codebook",
                            method="histogram")
         self.assertLess(rt["bpw"], rk["bpw"])
         self.assertGreater(rt["roofline_tps"], rk["roofline_tps"])
-        # Speedup ratio is bounded above by the bpw ratio (KV dilutes it).
+        # Speedup ratio is bounded above by the storage-bpw ratio (KV
+        # dilutes it).
         self.assertLessEqual(rt["roofline_tps"] / rk["roofline_tps"],
-                             rk["bpw"] / rt["bpw"] + 1e-9)
+                             rk["storage_bpw"] / rt["storage_bpw"] + 1e-9)
         self.assertLess(rt["equiv_adds_per_w"], rk["equiv_adds_per_w"])
         # Both are bandwidth-bound on M1-Pro-class hardware: arithmetic
         # intensity well under a 10 FLOP/byte machine balance.
@@ -638,19 +647,24 @@ class TestOpCount(unittest.TestCase):
         # Opcount re-run with the FITTED ternary reference (ternary_1step,
         # the practical fitted encoder) instead of ternary_uniform. The
         # refit widens the thresholds -> higher zero-rate (~0.41 vs ~0.31)
-        # -> fewer adds/weight. The decode ceiling is byte-driven and
-        # must not move (1.36x), while the energy-proxy ratio must be at
-        # least as large as uniform's 3.04x. Measured: 1.357x / 3.52x.
+        # -> fewer adds/weight. The decode ceiling is byte-driven and uses
+        # the packable storage rate (2.125 at g128), so the edge is the
+        # corrected 1.110x (the old 1.357x used the entropy bpw as the
+        # byte rate -- an overstatement corrected 2026-09-22), while the
+        # energy-proxy ratio must be at least as large as uniform's 3.04x.
         rng = np.random.default_rng(7)
         w = synthetic_weights(rng, n_groups=64)
         q1 = quantize_ternary_1step(w, group_size=128)
         qk = quantize_int2_kmeans_q8(w, group_size=128)
         r1 = scheme_report("ternary_1step", bpw=q1.bpw, kind="ternary",
-                           sparsity=measured_sparsity(q1))
+                           sparsity=measured_sparsity(q1),
+                           storage_bpw=ternary_storage_bpw(128, 1))
         rk = scheme_report("int2_kmeans_q8", bpw=qk.bpw, kind="codebook",
                            method="histogram")
+        self.assertAlmostEqual(r1["storage_bpw"], 2.125, places=6)
+        self.assertAlmostEqual(r1["weight_GB"], 18.59, delta=0.01)
         self.assertAlmostEqual(r1["roofline_tps"] / rk["roofline_tps"],
-                               1.357, delta=0.01)
+                               1.110, delta=0.01)
         self.assertGreaterEqual(rk["equiv_adds_per_w"]
                                 / r1["equiv_adds_per_w"], 3.04)
         self.assertLess(r1["equiv_adds_per_w"], rk["equiv_adds_per_w"])
@@ -699,13 +713,16 @@ class TestOpCount(unittest.TestCase):
             sf = side_fractions(q)
             rd = scheme_report("ternary_1step_ds", bpw=q.bpw, kind="ternary",
                                sparsity=sf["zero"], n_scales=2,
-                               group_size=128)
+                               group_size=128,
+                               storage_bpw=ternary_storage_bpw(128, 2))
             rk = scheme_report("int2_kmeans_q8", bpw=qk.bpw, kind="codebook",
                                method="histogram")
-            # Decode ceiling is byte-driven: lower than symmetric 1-step's
-            # 1.357x because the dual reference carries 1.835 vs 1.710 bpw.
+            # Decode ceiling is byte-driven and uses the packable storage
+            # rate (2.25 at g128 dual-scale): the edge shrinks to 1.052x
+            # (the old 1.272x used the entropy bpw as the byte rate).
+            self.assertAlmostEqual(rd["storage_bpw"], 2.25, places=6)
             self.assertAlmostEqual(rd["roofline_tps"] / rk["roofline_tps"],
-                                   1.272, delta=0.01)
+                                   1.052, delta=0.01)
             # Energy-proxy advantage holds at >= 3.3x on both clean and
             # skewed tensors (measured 3.53 clean / 3.40 skewed), and the
             # dual's extra scale multiply is real but negligible.
@@ -717,6 +734,70 @@ class TestOpCount(unittest.TestCase):
         # than negative.
         sf_s = side_fractions(qd_s)
         self.assertGreater(sf_s["pos"], 2.0 * sf_s["neg"])
+
+    def test_ternary_storage_bpw_values(self):
+        # Packable ternary = 2 bits/code + fp16 scale(s) per group:
+        # 2 + 16*n_scales/group_size. Entropy bpw (log2(3) ~ 1.585) is
+        # the comparison rate, never the byte rate.
+        self.assertAlmostEqual(ternary_storage_bpw(128, 1), 2.125, places=9)
+        self.assertAlmostEqual(ternary_storage_bpw(128, 2), 2.25, places=9)
+        self.assertAlmostEqual(ternary_storage_bpw(64, 1), 2.25, places=9)
+        self.assertAlmostEqual(ternary_storage_bpw(256, 1), 2.0625, places=9)
+        with self.assertRaises(ValueError):
+            ternary_storage_bpw(0, 1)
+        with self.assertRaises(ValueError):
+            ternary_storage_bpw(128, 0)
+
+    def test_storage_bpw_defaults_to_bpw(self):
+        # Back-compat: without storage_bpw the report is byte-identical
+        # to the pre-correction behavior (codebook schemes already pass
+        # their true storage rate as bpw).
+        rng = np.random.default_rng(7)
+        w = synthetic_weights(rng, n_groups=64)
+        qk = quantize_int2_kmeans_q8(w, group_size=128)
+        rk = scheme_report("int2_kmeans_q8", bpw=qk.bpw, kind="codebook",
+                           method="histogram")
+        self.assertEqual(rk["storage_bpw"], rk["bpw"])
+        self.assertAlmostEqual(rk["weight_GB"],
+                               qk.bpw * 70e9 / 8 / 1e9, places=6)
+
+    def test_storage_bpw_drives_bytes_not_ops(self):
+        # storage_bpw changes every byte-driven figure and nothing else:
+        # weight_GB, roofline_tps, flops_per_byte move; the op counts,
+        # energy proxy, and entropy bpw stay put.
+        rng = np.random.default_rng(7)
+        w = synthetic_weights(rng, n_groups=64)
+        q1 = quantize_ternary_1step(w, group_size=128)
+        r_entropy = scheme_report("t", bpw=q1.bpw, kind="ternary",
+                                  sparsity=measured_sparsity(q1))
+        r_pack = scheme_report("t", bpw=q1.bpw, kind="ternary",
+                               sparsity=measured_sparsity(q1),
+                               storage_bpw=ternary_storage_bpw(128, 1))
+        self.assertEqual(r_pack["bpw"], q1.bpw)
+        self.assertAlmostEqual(r_pack["storage_bpw"], 2.125, places=9)
+        self.assertGreater(r_pack["weight_GB"], r_entropy["weight_GB"])
+        self.assertLess(r_pack["roofline_tps"], r_entropy["roofline_tps"])
+        self.assertLess(r_pack["flops_per_byte"], r_entropy["flops_per_byte"])
+        for k in ("adds_per_w", "muls_per_w", "lookups_per_w",
+                  "equiv_adds_per_w"):
+            self.assertEqual(r_pack[k], r_entropy[k])
+
+    def test_print_report_shows_storage_bpw(self):
+        # The printed table carries the storage rate alongside the
+        # entropy bpw so a glance can't mistake one for the other.
+        rng = np.random.default_rng(7)
+        w = synthetic_weights(rng, n_groups=64)
+        q1 = quantize_ternary_1step(w, group_size=128)
+        row = scheme_report("ternary_1step", bpw=q1.bpw, kind="ternary",
+                            sparsity=measured_sparsity(q1),
+                            storage_bpw=ternary_storage_bpw(128, 1))
+        buf = StringIO()
+        with redirect_stdout(buf):
+            print_report([row])
+        out = buf.getvalue()
+        self.assertIn("stor", out.splitlines()[0])
+        self.assertIn("2.125", out.splitlines()[1])
+        self.assertIn("18.59", out.splitlines()[1])
 
     def test_prefill_roofline_regime_flip_and_ratio(self):
         # Prefill roofline with the two adopted references: ternary_1step

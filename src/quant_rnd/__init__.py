@@ -50,6 +50,7 @@ def __getattr__(name):
         return getattr(_bench, name)
     if name in ("M1_PRO_MEM_BW_GBS", "N_PARAMS_70B", "decode_roofline_tps",
                 "kv_cache_bytes", "weight_bytes", "ternary_opcount",
+                "ternary_storage_bpw",
                 "codebook_opcount", "equiv_adds", "measured_sparsity",
                 "scheme_report", "print_report", "is_bandwidth_bound"):
         from . import opcount as _opcount
@@ -101,6 +102,7 @@ __all__ = [
     "kv_cache_bytes",
     "weight_bytes",
     "ternary_opcount",
+    "ternary_storage_bpw",
     "codebook_opcount",
     "equiv_adds",
     "measured_sparsity",
