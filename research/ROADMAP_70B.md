@@ -528,6 +528,15 @@ measuring where quality actually breaks.
       final route) per turn and review after a week of real use to tune
       the keyword set and thresholds; consider a learned router only if
       the rule-based one mis-routes measurably
+      LOGGING HALF LANDED 2026-09-22: `CascadeClient.route_log` (bounded
+      deque, 1000) appends one record per turn — heuristic records
+      len_chars / keyword_hits / hit_keywords (sorted) / complex verdict
+      via new `heuristic_score()` (is_complex delegates, behavior
+      unchanged); verify records the looks_weak decision; every record
+      carries seq/router/final route. `route_summary()` returns the
+      per-route tally. 8 new tests, suite 440 green. Remaining: review
+      against real use after a week (needs Justin's usage); consider a
+      learned router only if the rule-based one mis-routes measurably.
 - [x] Prototype MLX backend (mac-only; can't be tested on Linux — needs Justin's Mac)
       — LANDED 2026-09-21 as `src/mlx_backend.py` + opt-in `backend: mlx`
       wiring (commit 02e4d77, 254 tests green). `MlxClient` wraps mlx-lm's

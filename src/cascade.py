@@ -17,12 +17,17 @@ Routers:
                  refuses, returns empty text with no tool calls. Two passes
                  worst case, but no false escalations on easy queries.
 
+Router calibration: every turn appends one record to ``CascadeClient.route_log``
+(heuristic score details / verify decision / final route) so the keyword set
+and thresholds can be tuned after real use. See ``route_summary()``.
+
 The big-model client is built lazily via ``big_factory`` on the first
 escalation, so the small model stays the only resident cost until the cascade
 actually fires. There is no unload API in v1; restarting Hearth drops the big
 model from RAM.
 """
 from __future__ import annotations
+from collections import deque
 import re
 
 from .llm import LLMError
@@ -67,19 +72,35 @@ def looks_weak(msg: dict) -> bool:
     return looks_like_refusal(content)
 
 
+def heuristic_score(text: str, len_chars: int = 2000,
+                    keyword_hits: int = 2) -> dict:
+    """Auditable decomposition of the heuristic routing rule.
+
+    Returns the inputs that drive the decision (message length, which
+    keywords fired, hit count) plus the verdict. Logged per turn so the
+    keyword set and thresholds can be calibrated against real traffic
+    instead of guessed at.
+    """
+    text = text or ""
+    lowered = text.lower()
+    hits = sorted(kw for kw in _COMPLEXITY_KEYWORDS if kw in lowered)
+    return {
+        "len_chars": len(text),
+        "keyword_hits": len(hits),
+        "hit_keywords": hits,
+        "complex": len(text) > len_chars or len(hits) >= keyword_hits,
+    }
+
+
 def is_complex(text: str, len_chars: int = 2000, keyword_hits: int = 2) -> bool:
     """Heuristic complexity test for "heuristic" routing.
 
     Escalate when the last user message is long (> len_chars) or contains at
     least keyword_hits complexity keywords. Documented so the rule stays
-    auditable; thresholds are constructor kwargs.
+    auditable; thresholds are constructor kwargs. For the decomposed
+    inputs behind the verdict, see heuristic_score().
     """
-    text = text or ""
-    if len(text) > len_chars:
-        return True
-    lowered = text.lower()
-    hits = sum(1 for kw in _COMPLEXITY_KEYWORDS if kw in lowered)
-    return hits >= keyword_hits
+    return heuristic_score(text, len_chars, keyword_hits)["complex"]
 
 
 class CascadeClient:
@@ -106,6 +127,11 @@ class CascadeClient:
         # Observability for tests / logs; not part of the chat contract.
         self.last_route: str | None = None
         self.escalations = 0
+        # Per-turn routing records for router calibration:
+        # {"seq", "router", "route", ...router-specific score details}.
+        # Bounded so a long-lived agent session can't grow it without limit.
+        self.route_log: deque = deque(maxlen=1000)
+        self._seq = 0
 
     def _big_client(self):
         if self._big is None:
@@ -118,15 +144,43 @@ class CascadeClient:
                 return m.get("content") or ""
         return ""
 
+    def _log_route(self, record: dict, route: str) -> None:
+        record = {"seq": self._seq, "router": self.router,
+                  "route": route, **record}
+        self._seq += 1
+        self.route_log.append(record)
+        self.last_route = route
+
+    def route_summary(self) -> dict:
+        """Calibration-friendly tally of the route log: per-route counts.
+
+        The raw records in ``route_log`` carry the score details
+        (heuristic: len_chars / keyword_hits / hit_keywords; verify:
+        weak) for tuning the rule after real use.
+        """
+        counts = {"small": 0, "big": 0}
+        for record in self.route_log:
+            counts[record["route"]] += 1
+        return {"router": self.router, "turns": len(self.route_log),
+                "small": counts["small"], "big": counts["big"],
+                "escalations": self.escalations}
+
     def chat(self, messages: list[dict], tools: list[dict] | None = None) -> dict:
-        if self.router == "heuristic" and is_complex(
+        record: dict = {}
+        if self.router == "heuristic":
+            record = heuristic_score(
                 self._last_user_text(messages),
-                self.heuristic_len_chars, self.heuristic_keyword_hits):
-            return self._escalate(messages, tools)
+                self.heuristic_len_chars, self.heuristic_keyword_hits)
+            if record["complex"]:
+                self._log_route(record, "big")
+                return self._escalate(messages, tools)
         msg = self.small.chat(messages, tools)
-        if self.router == "verify" and looks_weak(msg):
-            return self._escalate(messages, tools)
-        self.last_route = "small"
+        if self.router == "verify":
+            record = {"weak": looks_weak(msg)}
+            if record["weak"]:
+                self._log_route(record, "big")
+                return self._escalate(messages, tools)
+        self._log_route(record, "small")
         return msg
 
     def _escalate(self, messages: list[dict],

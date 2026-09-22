@@ -5,8 +5,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.cascade import (CascadeClient, is_complex, looks_like_refusal,
-                         looks_weak)
+from src.cascade import (CascadeClient, heuristic_score, is_complex,
+                         looks_like_refusal, looks_weak)
 from src.llm import LLMError
 
 
@@ -149,6 +149,88 @@ class TestHelpers(unittest.TestCase):
     def test_unknown_router_rejected(self):
         with self.assertRaises(LLMError):
             CascadeClient(FakeClient(msg("x")), lambda: None, router="oracle")
+
+
+class TestRouteLog(unittest.TestCase):
+    def test_heuristic_small_turn_logged(self):
+        c, _, _, built = make()
+        c.chat([{"role": "user", "content": "what time is it?"}])
+        self.assertEqual(len(c.route_log), 1)
+        r = c.route_log[0]
+        self.assertEqual(r["seq"], 0)
+        self.assertEqual(r["router"], "heuristic")
+        self.assertEqual(r["route"], "small")
+        self.assertEqual(r["len_chars"], 16)
+        self.assertEqual(r["keyword_hits"], 0)
+        self.assertEqual(r["hit_keywords"], [])
+        self.assertFalse(r["complex"])
+        self.assertEqual(built, [])
+
+    def test_heuristic_escalation_logged_with_hits(self):
+        c, _, _, _ = make()
+        c.chat([{"role": "user",
+                 "content": "debug this recursion bug in my algorithm"}])
+        r = c.route_log[0]
+        self.assertEqual(r["route"], "big")
+        self.assertTrue(r["complex"])
+        # which keywords fired, sorted and deterministic
+        self.assertEqual(r["hit_keywords"], ["algorithm", "debug", "recursion"])
+        self.assertEqual(r["keyword_hits"], 3)
+        self.assertEqual(r["len_chars"], 40)
+
+    def test_heuristic_length_trip_logged(self):
+        c, _, _, _ = make()
+        c.chat([{"role": "user", "content": "x" * 2001}])
+        r = c.route_log[0]
+        self.assertEqual(r["route"], "big")
+        self.assertEqual(r["len_chars"], 2001)
+        self.assertEqual(r["keyword_hits"], 0)
+
+    def test_verify_turns_log_weak_decision(self):
+        c, _, _, _ = make(router="verify")
+        c.chat([{"role": "user", "content": "hi"}])
+        r = c.route_log[0]
+        self.assertEqual(r["router"], "verify")
+        self.assertEqual(r["route"], "small")
+        self.assertFalse(r["weak"])
+
+        c2, _, _, _ = make(router="verify",
+                           small_reply=msg("I don't know how to do that."))
+        c2.chat([{"role": "user", "content": "hi"}])
+        r2 = c2.route_log[0]
+        self.assertEqual(r2["route"], "big")
+        self.assertTrue(r2["weak"])
+
+    def test_seq_increments_across_turns(self):
+        c, _, _, _ = make()
+        c.chat([{"role": "user", "content": "hi"}])
+        c.chat([{"role": "user", "content": "y" * 2001}])
+        self.assertEqual([r["seq"] for r in c.route_log], [0, 1])
+
+    def test_route_summary_counts(self):
+        c, _, _, _ = make()
+        c.chat([{"role": "user", "content": "hi"}])
+        c.chat([{"role": "user", "content": "y" * 2001}])
+        c.chat([{"role": "user", "content": "thanks"}])
+        self.assertEqual(c.route_summary(),
+                         {"router": "heuristic", "turns": 3,
+                          "small": 2, "big": 1, "escalations": 1})
+
+    def test_route_log_bounded(self):
+        c, _, _, _ = make()
+        for _ in range(1050):
+            c.chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(len(c.route_log), 1000)
+        self.assertEqual(c.route_log[0]["seq"], 50)  # oldest dropped
+
+    def test_heuristic_score_consistent_with_is_complex(self):
+        for text in ["", "hi", "x" * 2001, "debug this recursion",
+                     "prove the theorem by lemma"]:
+            s = heuristic_score(text)
+            self.assertEqual(s["complex"], is_complex(text))
+            self.assertEqual(s["keyword_hits"], len(s["hit_keywords"]))
+            self.assertEqual(s["hit_keywords"], sorted(s["hit_keywords"]))
+            self.assertEqual(s["len_chars"], len(text))
 
 
 class TestAgentWiring(unittest.TestCase):
