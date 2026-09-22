@@ -101,6 +101,52 @@ def estimate(params_b: float, quant: str, n_ctx: int,
     }
 
 
+def moe_expert_gb(n_layer: int, n_experts: int, hidden_size: int,
+                  moe_intermediate_size: int, expert_bits: float,
+                  n_proj: int = 3) -> float:
+    """GB of routed-expert weights for an MoE layer stack.
+
+    Each routed expert is n_proj projections of (hidden_size x
+    moe_intermediate_size) at expert_bits per weight. For
+    Qwen3.5/3.6-35B-A3B: 40 layers x 256 experts x 3 x 2048 x 512 at
+    2-bit = ~8.05 GB. (The oQ2 config fuses routed experts as
+    switch_mlp.{gate,up,down}_proj; the parameter count is the same.)
+    """
+    params = n_layer * n_experts * n_proj * hidden_size * moe_intermediate_size
+    return params * expert_bits / 8 / 1e9
+
+
+def smelt_resident(total_gb: float, expert_gb: float,
+                   smelt_frac: float) -> dict:
+    """Resident-RAM estimate for vmlx Smelt (partial expert loading).
+
+    Smelt keeps the backbone (attention, shared experts, embeddings,
+    lm_head, norms, vision tower) fully resident and pages smelt_frac
+    of the routed-expert weights from SSD; routing is biased toward the
+    resident experts. The backbone is the residual total - experts, so
+    this needs the MEASURED total file size, not a nominal bpw figure.
+
+    Returns backbone_gb, resident_experts_gb, resident_gb (all weights;
+    add KV cache + runtime separately).
+    """
+    if not 0.0 < smelt_frac <= 1.0:
+        return {"ok": False,
+                "error": f"smelt_frac must be in (0, 1], got {smelt_frac}"}
+    if expert_gb > total_gb:
+        return {"ok": False,
+                "error": f"expert_gb ({expert_gb}) exceeds total_gb ({total_gb})"}
+    backbone_gb = total_gb - expert_gb
+    resident_experts_gb = expert_gb * smelt_frac
+    resident_gb = backbone_gb + resident_experts_gb
+    return {
+        "ok": True,
+        "backbone_gb": round(backbone_gb, 2),
+        "resident_experts_gb": round(resident_experts_gb, 2),
+        "resident_gb": round(resident_gb, 2),
+        "smelt_frac": smelt_frac,
+    }
+
+
 def register(ctx: dict) -> None:
     budget = float(ctx.get("memory_budget_gb", 11.0))
 

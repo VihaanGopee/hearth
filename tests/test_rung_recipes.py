@@ -8,7 +8,7 @@ import math
 import os
 import unittest
 
-from src.tools.fitcheck import estimate
+from src.tools.fitcheck import estimate, moe_expert_gb, smelt_resident
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RECIPES = os.path.join(REPO, "research", "recipes")
@@ -122,6 +122,60 @@ class TestRung3RecipeNumbers(unittest.TestCase):
             os.path.isfile(os.path.join(RECIPES, "RUNG3_qwen3_5_35b_a3b_moe.md")))
 
 
+class TestRung4RecipeNumbers(unittest.TestCase):
+    """research/recipes/RUNG4_oq2_35b_smelt.md."""
+
+    def _estimate(self, n_ctx, cache_type):
+        r = estimate(35.0, "q4_k_m", n_ctx, arch="qwen3.6-35b-a3b",
+                     cache_type=cache_type)
+        self.assertTrue(r["ok"], r.get("error"))
+        return r
+
+    def test_arch_entry_kv_2048_f16(self):
+        # Same hybrid skeleton as 3.5: GQA-2 KV heads, head_dim 256, only
+        # the 10 full-attention layers carry KV (full_attention_interval=4
+        # in the Jundot oQ2 config.json text_config, 2026-09-21).
+        r = self._estimate(2048, "f16")
+        self.assertAlmostEqual(r["kv_cache_gb"], 0.04, delta=0.03)
+
+    def test_routed_expert_bytes(self):
+        # 40 layers x 256 experts x 3 projs x 2048 x 512 @ 2-bit.
+        self.assertAlmostEqual(
+            moe_expert_gb(40, 256, 2048, 512, 2.0), 8.05, delta=0.05)
+
+    def test_smelt_resident_50(self):
+        # Measured total 13.10 GB; backbone = 13.10 - 8.05 = 5.05 GB;
+        # smelt-50 pages half the routed experts.
+        s = smelt_resident(13.10, 8.05, 0.5)
+        self.assertTrue(s["ok"], s.get("error"))
+        self.assertAlmostEqual(s["backbone_gb"], 5.05, delta=0.05)
+        self.assertAlmostEqual(s["resident_experts_gb"], 4.03, delta=0.05)
+        self.assertAlmostEqual(s["resident_gb"], 9.07, delta=0.10)
+
+    def test_smelt_resident_25(self):
+        s = smelt_resident(13.10, 8.05, 0.25)
+        self.assertTrue(s["ok"], s.get("error"))
+        self.assertAlmostEqual(s["resident_gb"], 7.06, delta=0.10)
+
+    def test_smelt_rejects_bad_frac(self):
+        self.assertFalse(smelt_resident(13.10, 8.05, 0.0)["ok"])
+        self.assertFalse(smelt_resident(13.10, 8.05, 1.5)["ok"])
+        self.assertFalse(smelt_resident(8.05, 13.10, 0.5)["ok"])
+
+    def test_total_smelt50_fits_budget(self):
+        # Recipe: ~10.1 GB total @ smelt-50 (9.07 resident weights + 0.04
+        # KV @ 2048 f16 + ~1.0 runtime) — inside the ~11 GB usable budget.
+        kv = self._estimate(2048, "f16")["kv_cache_gb"]
+        s = smelt_resident(13.10, 8.05, 0.5)
+        total = s["resident_gb"] + kv + 1.0
+        self.assertLess(total, 11.0)
+        self.assertAlmostEqual(total, 10.1, delta=0.3)
+
+    def test_recipe_file_exists(self):
+        self.assertTrue(
+            os.path.isfile(os.path.join(RECIPES, "RUNG4_oq2_35b_smelt.md")))
+
+
 class TestRecipeConsistency(unittest.TestCase):
     """Every recipe named in model_profiles.yaml must exist on disk."""
 
@@ -138,6 +192,7 @@ class TestRecipeConsistency(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(RECIPES, "RUNG1_qwen3_8b_20tps.md")))
         self.assertTrue(os.path.isfile(os.path.join(RECIPES, "RUNG2_qwen3_14b_20tps.md")))
         self.assertTrue(os.path.isfile(os.path.join(RECIPES, "RUNG3_qwen3_5_35b_a3b_moe.md")))
+        self.assertTrue(os.path.isfile(os.path.join(RECIPES, "RUNG4_oq2_35b_smelt.md")))
 
 
 class TestModelProfiles(unittest.TestCase):

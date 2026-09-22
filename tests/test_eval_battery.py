@@ -116,5 +116,20 @@ class TestCheckItem(unittest.TestCase):
             eval_battery.check_item(item, "x")
 
 
+class TestSelectItems(unittest.TestCase):
+    def test_none_returns_all(self):
+        self.assertEqual(len(eval_battery.select_items(None)),
+                         len(eval_battery.BATTERY))
+
+    def test_subset_filters(self):
+        items = eval_battery.select_items("halluc-accord,halluc-nobel")
+        self.assertEqual([i["id"] for i in items],
+                         ["halluc-accord", "halluc-nobel"])
+
+    def test_unknown_id_raises(self):
+        with self.assertRaises(eval_battery.BatteryError):
+            eval_battery.select_items("halluc-accord,nope-not-real")
+
+
 if __name__ == "__main__":
     unittest.main()

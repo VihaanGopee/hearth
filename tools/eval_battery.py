@@ -269,10 +269,23 @@ def ollama_stop(model):
 # Runner
 # ---------------------------------------------------------------------------
 
-def run_model(base_url, model):
+def select_items(item_ids):
+    """Filter BATTERY to a comma-separated list of ids (None/empty = all)."""
+    if not item_ids:
+        return list(BATTERY)
+    wanted = [i.strip() for i in item_ids.split(",") if i.strip()]
+    known = {item["id"] for item in BATTERY}
+    unknown = [i for i in wanted if i not in known]
+    if unknown:
+        raise BatteryError("unknown item ids: %s (choose from: %s)"
+                           % (", ".join(unknown), ", ".join(sorted(known))))
+    return [item for item in BATTERY if item["id"] in wanted]
+
+
+def run_model(base_url, model, items, show_answers=False):
     results = []
-    print("MODEL %s (%d items)" % (model, len(BATTERY)), flush=True)
-    for i, item in enumerate(BATTERY, 1):
+    print("MODEL %s (%d items)" % (model, len(items)), flush=True)
+    for i, item in enumerate(items, 1):
         try:
             answer = generate(base_url, model, item["prompt"])
         except BatteryError as e:
@@ -282,9 +295,11 @@ def run_model(base_url, model):
         passed, failed = check_item(item, answer)
         mark = "PASS" if passed else "FAIL"
         print("  [%2d/%2d] %-16s %-4s  %s" % (
-            i, len(BATTERY), item["id"], mark,
+            i, len(items), item["id"], mark,
             ("; ".join(failed) if failed else _norm(answer)[:70])),
             flush=True)
+        if show_answers:
+            print("       answer: %s" % answer.strip(), flush=True)
         results.append((item, answer, passed, failed))
     return results
 
@@ -313,19 +328,33 @@ def print_scorecard(name, results):
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description="Side-by-side intelligence battery for two Ollama models.")
-    ap.add_argument("--models", nargs=2, required=True, metavar=("A", "B"),
-                    help="two Ollama model names to compare")
+    ap.add_argument("--models", nargs="+", required=True, metavar="MODEL",
+                    help="one or two Ollama model names (two = side-by-side)")
+    ap.add_argument("--items", default=None, metavar="ID,...",
+                    help="comma-separated item ids to run (default: all 19)")
+    ap.add_argument("--show-answers", action="store_true",
+                    help="print each model's full answer text")
     ap.add_argument("--base-url", default="http://localhost:11434")
     args = ap.parse_args(argv)
 
-    model_a, model_b = args.models
+    if len(args.models) not in (1, 2):
+        ap.error("--models takes one or two model names")
+    items = select_items(args.items)
+
     all_results = {}
     for idx, model in enumerate(args.models):
-        all_results[model] = run_model(args.base_url, model)
-        if idx == 0:
-            print("\nUnloading %s before loading %s ..." % (model_a, model_b))
-            ollama_stop(model_a)
+        all_results[model] = run_model(args.base_url, model, items,
+                                       show_answers=args.show_answers)
+        if len(args.models) == 2 and idx == 0:
+            print("\nUnloading %s before loading %s ..."
+                  % (args.models[0], args.models[1]))
+            ollama_stop(args.models[0])
 
+    if len(args.models) == 1:
+        print_scorecard(args.models[0], all_results[args.models[0]])
+        return
+
+    model_a, model_b = args.models
     print("\n================ SCORECARD ================")
     score_a = print_scorecard(model_a, all_results[model_a])
     score_b = print_scorecard(model_b, all_results[model_b])
