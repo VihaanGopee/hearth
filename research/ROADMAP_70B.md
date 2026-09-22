@@ -524,6 +524,13 @@ measuring where quality actually breaks.
 - [ ] Mac-side: verify whether `vmlx serve` accepts an HF repo id directly
       or needs a local snapshot dir (the RUNG4 recipe downloads first —
       note which form was used) (NEW 2026-09-21).
+- [ ] tools/eval_battery.py — OpenAI-compatible transport for the 19-prompt
+      battery, so rung 4+ (vmlx / mlx_lm.server) can be scored with the same
+      checks as rungs 1-3. Same trick as measure_openai.py should apply:
+      reuse the battery's check/prompt definitions, swap the generate
+      transport for streamed /v1/chat/completions. The RUNG4 recipe's
+      intelligence verdict (battery score vs rung 3) currently requires
+      running the prompts manually — this closes that gap. (NEW 2026-09-21)
 - [ ] Benchmark harness: quality-vs-quant curves on small models to validate the pipeline
 - [ ] Track BitNet.cpp releases + any 70B ternary model announcement
 - [ ] Track oQ/JANG releases and 2-bit MoE quality reports
