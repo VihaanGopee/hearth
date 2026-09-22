@@ -465,7 +465,9 @@ measuring where quality actually breaks.
       PDT): still nothing >=70B via the HF API. Item stays WATCH.
       RE-SURVEYED 2026-09-22 ~05:15 PDT: still nothing >=70B
       (top-50-by-downloads for TQ1_0 and TQ2_0 searched, zero entries
-      >=60B params).
+      >=60B params). RE-SURVEYED 2026-09-22 ~11:50 PDT: still nothing
+      >=70B — TQ1_0 hits unchanged (the Anjielon + nohurry 397B oddities
+      only); TQ2_0 top-50 still zero entries >=34B.
 - [ ] Verify Ollama's Metal kernel path for TQ1_0/TQ2_0 quants on the Mac
       (type support confirmed at llama.cpp b10969; whether ternary matmuls
       take an optimized path or a slow fallback on Apple Silicon is
@@ -669,6 +671,18 @@ measuring where quality actually breaks.
       org's largest remains bitnet-b1.58-2B-4T (2.4B, 4T tokens,
       mod 2025-12-17); other entries are VibeVoice-ASR-BitNet and the
       sub-1B embeddings. Avenue-A trigger not hit.
+      SWEEP 2026-09-22 ~11:50 PDT: still nothing — microsoft org's uploads
+      since 2026-09-03 are rho-* robotics (rho-libero/roboeval/base,
+      2026-09-17/18/22) + VibeVoice-ASR-Streaming 1.5B/7B; microsoft/BitNet
+      GitHub issues are all engine bugs (2026-09-22 #628 i2_s AVX2
+      accumulator folding, #588/#602 BitNet FFN using SiLU instead of
+      ReLU², #630 ARM64/NEON garbage output — no model-release
+      announcements); the only community "bitnet 70B" HF hit is a 2024
+      CodeLlama-70B conversion (andreclaudino, 123 dl), not a trained
+      ternary model; the 20 most recent "1.58-bit" HF uploads are all
+      <=14B (tzervas i2_s/w158a8 re-quants of the 2B-4T, Synapticode
+      TQ2_0 GGUF of 2B-4T at 821 dl, ArkCompact QAT series <=14B).
+      Avenue-A trigger not hit.
 - [ ] Track oQ/JANG releases and 2-bit MoE quality reports (SWEEP
       2026-09-21 pm: vmlx README (updated ~2026-09-17) adds an explicit
       JANG profile table, Smelt benchmarks unchanged, and a new
