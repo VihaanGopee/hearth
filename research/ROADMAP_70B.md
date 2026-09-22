@@ -1467,6 +1467,21 @@ measuring where quality actually breaks.
       rung-relevant candidates. Watch download counts and quality reports
       as a signal of oQ-ecosystem health. (NEW 2026-09-22)
 
+- [x] Watch automation: `tools/watch_sweep.py` — LANDED 2026-09-22 (~15:25
+      session): the 9 recurring HF/GitHub checks (TQ1_0/TQ2_0 top-50 >=60B,
+      JANGQ-AI / Jundot / ddalcu newest uploads, Nemotron JANGTQ2 downloads,
+      microsoft org ternary watch, vmlx + mlxl3 GitHub releases, 35B-A3B
+      EXL3 uploads) as one injectable-HTTP module with snapshot deltas
+      (`research/data/watch_snapshot.json`, gitignored). stdlib only,
+      21 new tests, suite 476 green. Live run reproduces the manual 14:15
+      sweep's conclusions (nothing new anywhere); a second run prints
+      `(none)` changes, so the delta machinery works end to end. NOTE for
+      future sessions: the manual sweeps in the log now reduce to
+      `python3 -m tools.watch_sweep --full` and reading the CHANGES
+      section — when the roadmap's watch set grows (e.g. new ecosystem
+      players like novamlx), add a check + test FIRST, then rely on it.
+      (NEW 2026-09-22)
+
 ## Ground rules for this research track
 
 - Every change is a git commit in `~/workspace/local-agent`. Revert with
