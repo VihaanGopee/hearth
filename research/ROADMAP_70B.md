@@ -404,7 +404,10 @@ measuring where quality actually breaks.
       ecosystem matures (none exist as of 2026-09-21). If a file appears,
       check its size against the 10–11 GB budget FIRST (a 70B TQ1_0 est.
       ~14.9 GB would still not fit; a ~50B TQ1_0 ≈ 10.6 GB would) before
-      any quality evaluation.
+      any quality evaluation. RE-SURVEYED 2026-09-21 (pm session): still
+      nothing — TQ1_0 hits are the same 397B oddity
+      (Anjielon/ODINO-397B-v34a-TQ1_0) plus unrelated small repos; TQ2_0
+      hits are all non-GGUF noise. Item stays WATCH.
 - [ ] Verify Ollama's Metal kernel path for TQ1_0/TQ2_0 quants on the Mac
       (type support confirmed at llama.cpp b10969; whether ternary matmuls
       take an optimized path or a slow fallback on Apple Silicon is
@@ -561,7 +564,50 @@ measuring where quality actually breaks.
       only meaningful once a model is served both ways). (NEW 2026-09-21)
 - [ ] Benchmark harness: quality-vs-quant curves on small models to validate the pipeline
 - [ ] Track BitNet.cpp releases + any 70B ternary model announcement
-- [ ] Track oQ/JANG releases and 2-bit MoE quality reports
+      (SWEEP 2026-09-21 pm: still nothing — avenue-A trigger not hit.
+      microsoft/BitNet's largest public model remains BitNet-b1.58-2B-4T
+      (2.4B, 4T tokens); an independent 2026 well-trained-models survey
+      (updated ~2026-09-16) finds no announced or in-progress 7B+ 1.58-bit
+      model with 1T+ tokens expected in 2026, and microsoft/BitNet's
+      "model-release" issues are empty. Re-check periodically.)
+- [ ] Track oQ/JANG releases and 2-bit MoE quality reports (SWEEP
+      2026-09-21 pm: vmlx README (updated ~2026-09-17) adds an explicit
+      JANG profile table, Smelt benchmarks unchanged, and a new
+      `--calibration-method activations` flag ("better at 2-3 bit") —
+      use it when converting locally. oMLX 0.6.4 allows TurboQuant KV
+      cache + Lightning MTP together — relevant to the MTP speculative
+      path. MiniMax-M2.5 JANG_2L datapoint: 74% MMLU at 82.5 GB vs 26.5%
+      for standard MLX 4-bit at 119.8 GB (author-reported). Re-check
+      periodically.)
+- [ ] Quant R&D: JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S candidate — NEW
+      2026-09-21 (pm sweep): prebuilt MLX JANG 2-bit for OUR rung-3
+      model. Measured **11.67 GB** via HF tree API — but the model card
+      claims 65.5% MMLU at **9.0 GB** (200-question subset, author-reported;
+      MLX 2-bit ~20% at 10 GB on the same table). The 9.0-vs-11.67 gap is
+      unresolved (likely text-only vs vision-tower-included accounting —
+      the 3.6 JANGTQ card ships 333 fp16 vision tensors). Borderline over
+      the ~11 GB budget fully resident → Smelt or text-only strip. Mac-side:
+      verify the 9.0 GB figure, run our battery (not their MMLU claim),
+      compare vs IQ2_XXS GGUF rung-3 and oQ2 rung-4. This is the leading
+      rung-3 fallback if IQ2_XXS quality disappoints.
+- [ ] Quant R&D: JANGQ-AI/Qwen3.6-35B-A3B-JANGTQ candidate — NEW
+      2026-09-21 (pm sweep): "TurboQuant" codebook 2-bit routed experts
+      (Lloyd-Max + Hadamard rotation, no dequant at inference) with
+      attention/embed/shared-expert/lm_head at 8-bit affine, router fp16.
+      Measured **11.63 GB** (12 shards). Requires the custom
+      `jang-tools` loader (stock mlx_lm can't parse `.tq_packed`);
+      card's usage block references `OsaurusAI/Qwen3.6-35B-A3B-JANGTQ2`
+      while the repo is `JANGQ-AI/Qwen3.6-35B-A3B-JANGTQ` — naming
+      inconsistency, pin the exact id on the Mac. Also over budget fully
+      resident (11.63 GB incl. fp16 vision tower dead weight for
+      text-only) → Smelt. Mac-side: quality battery vs oQ2 (rung-4's
+      current pick); compare the TurboQuant codebook claim ("better
+      quality AND faster decode than affine 2-bit at the same budget")
+      against our own opcount/SQNR numbers.
+- [ ] Watch: Nemotron-3-Nano-Omni-30B-A3B-JANGTQ2 (JANGQ-AI, 0 downloads
+      2026-09-21) — a NEW 30B-A3B MoE family with the JANGTQ2 format;
+      if quality reports appear, evaluate as a 35B-A3B alternative at
+      smaller size. (NEW 2026-09-21 pm sweep)
 - [x] Quant R&D: low-active-parameter MoE survey — SURVEYED 2026-09-21
       (research/moe_survey_2026-09-21.md). Central candidate confirmed:
       Qwen3.5-35B-A3B (35B total / 3.3B active, 256 experts 8+1 shared,
