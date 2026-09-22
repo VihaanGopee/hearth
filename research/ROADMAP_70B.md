@@ -463,6 +463,9 @@ measuring where quality actually breaks.
       Gemma3-27B-TQ2_0, bitnet-family TQ2_0 conversions) — real tooling
       love for the format, but no 70B file. RE-SURVEYED 2026-09-22 (~03:50
       PDT): still nothing >=70B via the HF API. Item stays WATCH.
+      RE-SURVEYED 2026-09-22 ~05:15 PDT: still nothing >=70B
+      (top-50-by-downloads for TQ1_0 and TQ2_0 searched, zero entries
+      >=60B params).
 - [ ] Verify Ollama's Metal kernel path for TQ1_0/TQ2_0 quants on the Mac
       (type support confirmed at llama.cpp b10969; whether ternary matmuls
       take an optimized path or a slow fallback on Apple Silicon is
@@ -674,7 +677,13 @@ measuring where quality actually breaks.
       the rung-4 pick (oQ2, 13.10 GB), so they don't improve the fit
       story; the -mtp variants carry the MTP head the oQ2 weights lack.
       NEW ecosystem players this sweep (items below): ddalcu/mlx-serve,
-      novamlx (MoE-aware SSD streaming), mlxl3 (EXL3 on MLX). Re-check
+      novamlx (MoE-aware SSD streaming), mlxl3 (EXL3 on MLX). SWEEP
+      2026-09-22 ~05:15 PDT: vmlx release train 1.6.59 -> 1.6.64
+      (2026-09-19) is correctness-only (tool-arg parsing fixes), jang
+      runtime 2.5.47 — no Smelt format-support change, so the rung-4
+      recipe conditions hold; vmlx GitHub issues: no public JANG_2S
+      Smelt serve report (2 closed April issues only, unrelated), so the
+      JANG_2S serve-path item stays Mac-side-unconfirmed. Re-check
       periodically.)
 - [ ] Track: novamlx (cnshsliu/novamlx) — NEW 2026-09-22: pure-Swift
       Mac-native LLM server with NovaMLX-TIE, a 3-tier (wired / LRU /
@@ -1262,7 +1271,10 @@ measuring where quality actually breaks.
       SWEEP 2026-09-22 ~03:50 PDT: no new 35B-A3B uploads (all JANGQ-AI
       entries last-modified 2026-09-08); Jundot nothing new in the oQ2
       class for 35B (latest are DeepSeek-V4.1-Flash / GLM-5.3 / Qwen3.8
-      oQ variants).
+      oQ variants). SWEEP 2026-09-22 ~05:15 PDT: no new 35B-A3B uploads
+      (JANGQ-AI latest last-modified 2026-09-08/09; Jundot's newest are
+      DeepSeek-V4.1-Flash-oQ3e-mtp / oQ4e-mtp (2026-09-10/11), nothing in
+      the oQ2 class for 35B).
       (NEW 2026-09-22)
 - [ ] Mac-side: confirm the JANG_2S serve path end to end — the JANG_2S
       profile is confirmed in the vmlx source (HYBRID_JANG_PROFILES) and
@@ -1272,6 +1284,11 @@ measuring where quality actually breaks.
       fails, the fallback is the plain (non-Smelt) vmlx serve at 10.75
       GB text-only — borderline over budget, measure resident RAM.
       (NEW 2026-09-22)
+- [ ] Track: DeepSeek-V4.1-Flash oQ3e-mtp / oQ4e-mtp (Jundot, 2026-09-10/11)
+      — the newest oQ-format MoE family upload (2-3.8k downloads); if vmlx
+      ever ships an oQ loader, the oQ3/oQ4e profiles (not just oQ2) become
+      rung-relevant candidates. Watch download counts and quality reports
+      as a signal of oQ-ecosystem health. (NEW 2026-09-22)
 
 ## Ground rules for this research track
 
