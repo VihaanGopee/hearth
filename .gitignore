@@ -6,5 +6,6 @@ research/data/*
 # (tokenizer tables + eval text). The multi-GB model weights stay ignored.
 !research/data/eval_text.txt
 !research/data/eval_text2.txt
+!research/data/corpus_pg11_alice.txt
 !research/data/tokenizer/
 !research/data/tokenizer/*

@@ -230,10 +230,13 @@ measuring where quality actually breaks.
       2.375 bpw vs 795.96 naive, missed the <400 bar — the group-wise
       fidelity ladder is exhausted; the climb now goes through bigger
       models + speed optimization, per standing direction).
-- [ ] Quant R&D: methodology caveat for future sweeps — perplexity only
-      discriminates below ~10x the fp32 reference; in collapse territory
-      report ordering as directional and do not quote ratios as quality
-      figures for the 70B case.
+- [x] Quant R&D: methodology caveat for future sweeps — WORKED EXAMPLE
+      LANDED 2026-09-22: perplexity only discriminates below ~10x the fp32
+      reference. The shuffled-block run (below) measures x_fp32 = 15.67,
+      so in collapse territory the report is a directional distribution,
+      not a quality figure for the 70B case. The naive anchor is now
+      quoted as a text-conditioned range (676 +/- 288 over 8 blocks),
+      not the 795.96 point.
 - [x] Quant R&D: ternary_lloyd perplexity at g64 (SQNR-best group size,
       ~5 min quantize) — ANSWERED 2026-09-21 (see robustness item):
       2729.23 @ 1.835 vs 2764.68 @ 1.710 g128 — the SQNR edge buys ~1%
@@ -808,14 +811,21 @@ measuring where quality actually breaks.
       g128 1047.35 @ 2.375 (text1: 1085.61 vs 795.96 — 37% gap). g128
       wins on both texts, so the 795.96 anchor decision was not
       text-luck; the group-size verdict is text-robust.
-- [ ] Quant R&D: shuffled-block eval sample — PARTIALLY LANDED
-      2026-09-21: `ppl.py --eval-texts A.txt,B.txt` now evaluates every
-      scheme on every text and reports per-text ppl + mean/std + x_fp32
-      (184 tests green; `fp32` accepted as a pseudo-scheme for a
-      same-table reference). Still open: the shuffled-block half —
-      sample N disjoint blocks from a longer corpus (needs a corpus
-      first; currently only two ~400-token hand-composed texts exist)
-      and report mean/std per scheme across blocks.
+- [x] Quant R&D: shuffled-block eval sample — LANDED 2026-09-22 as
+      `ppl.py --eval-corpus FILE --eval-blocks N [--eval-block-len L]
+      [--eval-block-seed S]` (commit fecd32d; deterministic disjoint
+      block sampling, labels carry the corpus offset, blocks reuse the
+      multitext report machinery; 10 new tests, 429 green). Corpus:
+      research/data/corpus_pg11_alice.txt (Alice in Wonderland, Project
+      Gutenberg, header/footer stripped, 44,525 tokens). First
+      measurement (fp32 + int2_kmeans_q8 g128 @ 2.375 bpw, 8 x 256-token
+      blocks): fp32 mean 43.18 +/- 14.30 (range 21.77-60.76);
+      int2_kmeans_q8 mean 676.49 +/- 288.18 (range 234.88-1210.21),
+      x_fp32 = 15.67. Verdict: the 795.96 anchor is text-conditioned and
+      is now quoted as 676 +/- 288; both hand-composed texts fall within
+      one std. Much of the spread is inherited text difficulty (fp32
+      spans 2.8x), with scheme x text interaction on top. Follow-up kept
+      open (low): g256-on-blocks slice to tighten the group-size verdict.
 - [x] Quant R&D: re-run the default (non-Lloyd) ternary sweep on
       eval_text2 via `--eval-texts` — PARTIALLY ANSWERED 2026-09-21
       (3-scheme slice: the 1.710-bpw fitted-vs-naive tiering question).

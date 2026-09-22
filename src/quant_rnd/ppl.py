@@ -25,12 +25,19 @@ Scope notes (honest):
   ppl is text-sensitive: ~+30% absolute shift text1 -> text2 for the
   same scheme). `fp32` is accepted as a scheme name for a same-table
   unquantized reference (bpw reported as 32.0).
+- `--eval-corpus FILE --eval-blocks N [--eval-block-len L] [--eval-block-seed S]`
+  is the shuffled-block half of that protocol: tokenize FILE once and
+  evaluate on N disjoint L-token blocks (deterministic seed) instead of
+  the eval texts. Blocks reuse the multitext report machinery; the
+  corpus lives at research/data/corpus_pg11_alice.txt (Alice in
+  Wonderland, Project Gutenberg, header/footer stripped).
 
 Usage: python3 -m src.quant_rnd.ppl <model.safetensors> [--schemes ...]
 """
 import argparse
 import inspect
 import os
+import random
 import time
 
 import numpy as np
@@ -63,6 +70,33 @@ def eval_text_paths(args: argparse.Namespace) -> list:
     if args.eval_texts:
         return [p for p in args.eval_texts.split(",") if p]
     return [args.eval_text]
+
+
+def sample_eval_blocks(corpus_ids, n_blocks: int, block_len: int,
+                       seed: int = 7) -> list:
+    """Sample n_blocks disjoint contiguous token blocks from a tokenized
+    corpus — the shuffled-block half of the text-robustness protocol.
+
+    Deterministic for a given seed: the candidate start offsets are the
+    non-overlapping grid range(0, len - block_len + 1, block_len), so the
+    sampled blocks are disjoint by construction. Returns
+    [(label, ids), ...] ready to drop into the multitext `texts` list;
+    the label records the block index and corpus offset (b03@1536).
+    Raises ValueError when n_blocks < 1 or the corpus is too short for n
+    non-overlapping blocks."""
+    if n_blocks < 1:
+        raise ValueError(f"--eval-blocks must be >= 1, got {n_blocks}")
+    total = len(corpus_ids)
+    slots = list(range(0, total - block_len + 1, block_len))
+    if len(slots) < n_blocks:
+        raise ValueError(
+            f"corpus too short for {n_blocks} disjoint blocks of "
+            f"{block_len} tokens: only {len(slots)} non-overlapping "
+            f"slots in {total} tokens")
+    rng = random.Random(seed)
+    starts = sorted(rng.sample(slots, n_blocks))
+    return [(f"b{i:02d}@{s}", list(corpus_ids[s:s + block_len]))
+            for i, s in enumerate(starts)]
 
 
 def is_embedding(name: str) -> bool:
@@ -562,6 +596,21 @@ def parse_args(argv: list | None = None) -> argparse.Namespace:
                          "Each scheme is evaluated on every text and the "
                          "report shows per-text ppl plus mean/std (the "
                          "text-robustness protocol)")
+    ap.add_argument("--eval-corpus", default=None, metavar="FILE",
+                    help="shuffled-block protocol: tokenize FILE and "
+                         "evaluate on N disjoint sampled blocks instead of "
+                         "--eval-text(s); requires --eval-blocks. Blocks "
+                         "flow through the same multitext report machinery")
+    ap.add_argument("--eval-blocks", type=int, default=None, metavar="N",
+                    help="number of disjoint corpus blocks to sample "
+                         "(requires --eval-corpus)")
+    ap.add_argument("--eval-block-len", type=int, default=256,
+                    metavar="L",
+                    help="tokens per sampled block (default 256)")
+    ap.add_argument("--eval-block-seed", type=int, default=7,
+                    metavar="S",
+                    help="seed for the deterministic block sampling "
+                         "(default 7)")
     ap.add_argument("--tokenizer-dir", default="research/data/tokenizer")
     ap.add_argument("--schemes", default=",".join(DEFAULT_SWEEP),
                     help="comma-separated scheme names")
@@ -735,6 +784,24 @@ def check_mechanism_args(args: argparse.Namespace) -> None:
                          "--only-names/--fisher/--quantize-embeddings/"
                          "--obq/--obq-all/--per-layer-schemes/"
                          "--sensitive-layers")
+
+
+def check_corpus_args(args: argparse.Namespace) -> None:
+    """Validate the --eval-corpus shuffled-block protocol flags;
+    SystemExit on misuse. Factored for testability."""
+    if args.eval_corpus is None:
+        if args.eval_blocks is not None:
+            raise SystemExit("--eval-blocks requires --eval-corpus")
+        return
+    if args.eval_texts:
+        raise SystemExit("--eval-corpus and --eval-texts are mutually "
+                         "exclusive (the corpus blocks are the eval set)")
+    if args.eval_blocks is None:
+        raise SystemExit("--eval-corpus requires --eval-blocks N")
+    if args.eval_blocks < 1:
+        raise SystemExit("--eval-blocks must be >= 1")
+    if args.eval_block_len < 1:
+        raise SystemExit("--eval-block-len must be >= 1")
 
 
 def resolve_layer_schemes(args: argparse.Namespace, tensors: dict,
@@ -966,16 +1033,31 @@ def main() -> None:
         print("quantize_embeddings ON: embedding tables (wte, wpe) also "
               "quantized with the same scheme; biases/LN stay fp32")
     texts = []
-    for p in eval_text_paths(args):
-        with open(p) as f:
-            text = f.read()
-        ids = GPT2Tokenizer(args.tokenizer_dir).encode(text)
-        label = os.path.basename(p)
-        texts.append((label, ids))
-        print(f"eval text {label}: {len(ids)} tokens")
     check_obq_args(args)
     check_mixed_args(args)
     check_mechanism_args(args)
+    check_corpus_args(args)
+    if args.eval_corpus:
+        with open(args.eval_corpus) as f:
+            corpus_ids = GPT2Tokenizer(args.tokenizer_dir).encode(f.read())
+        print(f"eval corpus {os.path.basename(args.eval_corpus)}: "
+              f"{len(corpus_ids)} tokens")
+        try:
+            texts = sample_eval_blocks(corpus_ids, args.eval_blocks,
+                                       args.eval_block_len,
+                                       args.eval_block_seed)
+        except ValueError as e:
+            raise SystemExit(str(e))
+        for label, ids in texts:
+            print(f"eval block {label}: {len(ids)} tokens")
+    else:
+        for p in eval_text_paths(args):
+            with open(p) as f:
+                text = f.read()
+            ids = GPT2Tokenizer(args.tokenizer_dir).encode(text)
+            label = os.path.basename(p)
+            texts.append((label, ids))
+            print(f"eval text {label}: {len(ids)} tokens")
     if len(texts) > 1 and (args.obq_all or args.obq):
         print("note: OBQ probes run on the first eval text only "
               f"({texts[0][0]})")

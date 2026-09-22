@@ -1604,6 +1604,7 @@ from src.quant_rnd.ppl import (
     DEFAULT_SWEEP,
     FP32_SCHEME,
     aggregate_multitext,
+    check_corpus_args,
     check_obq_args,
     eval_text_paths,
     is_embedding,
@@ -1613,6 +1614,7 @@ from src.quant_rnd.ppl import (
     quantize_model,
     quantize_model_obq,
     quantize_one_layer_obq,
+    sample_eval_blocks,
 )
 from src.quant_rnd.obq import quantize_layer_obq, quantize_layers_obq
 
@@ -2000,6 +2002,88 @@ class TestMultiTextEval(unittest.TestCase):
         self.assertAlmostEqual(rows[0]["mean"], 100.0)
         self.assertAlmostEqual(rows[0]["std"], 0.0)
         self.assertIsNone(rows[0]["x_fp32"])
+
+
+class TestEvalBlocks(unittest.TestCase):
+    """--eval-corpus shuffled-block sampling (sample_eval_blocks) and its
+    CLI validation (check_corpus_args): the missing half of the
+    text-robustness protocol, closed 2026-09-22."""
+
+    def test_sample_blocks_deterministic(self):
+        corpus = list(range(10000))
+        a = sample_eval_blocks(corpus, 4, 256, seed=7)
+        b = sample_eval_blocks(corpus, 4, 256, seed=7)
+        self.assertEqual([l for l, _ in a], [l for l, _ in b])
+        for (_, ia), (_, ib) in zip(a, b):
+            self.assertEqual(ia, ib)
+
+    def test_sample_blocks_disjoint_and_content_matches_offset(self):
+        corpus = list(range(10000))
+        blocks = sample_eval_blocks(corpus, 8, 256, seed=7)
+        self.assertEqual(len(blocks), 8)
+        ranges = []
+        for label, ids in blocks:
+            self.assertEqual(len(ids), 256)
+            # label records the block index and the corpus offset
+            idx, at = label.split("@")
+            self.assertTrue(idx.startswith("b"))
+            start = int(at)
+            self.assertEqual(ids, corpus[start:start + 256])
+            ranges.append((start, start + 256))
+        for i in range(len(ranges)):
+            for j in range(i + 1, len(ranges)):
+                a0, a1 = ranges[i]
+                b0, b1 = ranges[j]
+                self.assertTrue(a1 <= b0 or b1 <= a0,
+                                f"blocks overlap: {ranges[i]} {ranges[j]}")
+
+    def test_sample_blocks_different_seeds_differ(self):
+        corpus = list(range(10000))
+        a = [l for l, _ in sample_eval_blocks(corpus, 8, 256, seed=7)]
+        b = [l for l, _ in sample_eval_blocks(corpus, 8, 256, seed=8)]
+        self.assertNotEqual(a, b)
+
+    def test_sample_blocks_too_short_raises(self):
+        # 500 tokens -> only 1 non-overlapping 256-token slot
+        with self.assertRaises(ValueError):
+            sample_eval_blocks(list(range(500)), 2, 256, seed=7)
+        # exactly enough slots works
+        blocks = sample_eval_blocks(list(range(512)), 2, 256, seed=7)
+        self.assertEqual(len(blocks), 2)
+
+    def test_sample_blocks_n_blocks_zero_raises(self):
+        with self.assertRaises(ValueError):
+            sample_eval_blocks(list(range(10000)), 0, 256, seed=7)
+
+    def test_check_corpus_args_valid_combo(self):
+        args = ppl_parse_args(["m.safetensors", "--eval-corpus", "c.txt",
+                               "--eval-blocks", "8"])
+        check_corpus_args(args)  # must not raise
+        self.assertEqual(args.eval_block_len, 256)
+        self.assertEqual(args.eval_block_seed, 7)
+
+    def test_check_corpus_args_blocks_without_corpus(self):
+        args = ppl_parse_args(["m.safetensors", "--eval-blocks", "8"])
+        with self.assertRaises(SystemExit):
+            check_corpus_args(args)
+
+    def test_check_corpus_args_corpus_without_blocks(self):
+        args = ppl_parse_args(["m.safetensors", "--eval-corpus", "c.txt"])
+        with self.assertRaises(SystemExit):
+            check_corpus_args(args)
+
+    def test_check_corpus_args_corpus_conflicts_with_eval_texts(self):
+        args = ppl_parse_args(["m.safetensors", "--eval-corpus", "c.txt",
+                               "--eval-blocks", "8",
+                               "--eval-texts", "a.txt,b.txt"])
+        with self.assertRaises(SystemExit):
+            check_corpus_args(args)
+
+    def test_check_corpus_args_zero_blocks(self):
+        args = ppl_parse_args(["m.safetensors", "--eval-corpus", "c.txt",
+                               "--eval-blocks", "0"])
+        with self.assertRaises(SystemExit):
+            check_corpus_args(args)
 
 
 class TestQuantizedPerplexityEndToEnd(unittest.TestCase):
