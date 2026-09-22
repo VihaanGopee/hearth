@@ -289,14 +289,22 @@ measuring where quality actually breaks.
       after a full quantize+forward cycle — `quantize_model` now raises
       ValueError fail-fast with the --quantize-embeddings hint (2 new
       tests; docstring updated).
-- [ ] Quant R&D: fitted-4-bit (Lloyd 16-centroid) embedding probe — the
-      q4-uniform negative leaves one refinement open: does a FITTED 4-bit
-      codebook (not naive uniform) survive on the tied wte head? Would
-      need a new 16-centroid scheme (int2_kmeans machinery exists for 4
-      centroids; 16-centroid generalization + tests) and one ~40 s probe
-      run. Low priority: naive-uniform is what shipping quants actually
-      do to embeddings, and the >=8-bit rule already guides recipes.
-      (NEW 2026-09-22)
+- [x] Quant R&D: fitted-4-bit (Lloyd 16-centroid) embedding probe — ANSWERED
+      NO 2026-09-22 (~13:45 session): `int4_kmeans_q8` landed as a proper
+      scheme (per-group Lloyd, 16-centroid 8-bit codebook, 5.125 bpw @
+      g128; generalization of the int2_kmeans_q8 machinery, bit-identical
+      int2 anchors). MEASURED on the tied wte head, GPT-2 124M,
+      eval_text1, g128, fp32 ref 53.50:
+      **int4_kmeans_q8 -> ppl 52810.98** (987x — collapse) vs naive
+      int4_uniform -> 7730.81 and int8_uniform -> 54.76. Honest surprise:
+      the FITTED 4-bit codebook does WORSE than naive uniform on the
+      tied head at matched-ish width, even though it wins on synthetic
+      SQNR — another collapse-territory case where fidelity deltas don't
+      transfer to perplexity. The Mac-relevant rule is final:
+      embedding/lm_head tables must stay at >= 8-bit; there is no
+      survivable 4-bit (naive or fitted) for the tied head. The
+      embedding-probe thread is CLOSED (probe took 509 s; no more
+      session time on 4-bit embeddings). (NEW 2026-09-22)
 - [x] Quant R&D: layer-wise mixed-precision harness — LANDED 2026-09-21
       as `ppl.py --per-layer-schemes SPEC` (explicit per-block assignment,
       e.g. "0-5:int8_uniform,6-11:ternary_1step") and
