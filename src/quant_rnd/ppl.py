@@ -272,6 +272,63 @@ def sensitive_top_k(trace: dict, k: int) -> list:
     return sorted(trace, key=lambda i: (-trace[i], i))[:k]
 
 
+def block_linear_names(tensors: dict) -> dict:
+    """{block_idx: set of linear tensor names} over the model's blocks.
+
+    KeyError if any linear weight lacks a block index (the same
+    strictness as count_blocks — a silent fp32 pass-through would
+    corrupt the per-block damage comparison the mechanism probe
+    relies on).
+    """
+    groups: dict = {}
+    for name in linear_weight_tensors(tensors):
+        idx = layer_index_of(name)
+        if idx is None:
+            raise KeyError(f"linear weight {name!r} has no block index; "
+                           "per-block sensitivity probes are unsupported "
+                           "for this model")
+        groups.setdefault(idx, set()).add(name)
+    if not groups:
+        raise KeyError("no linear weights found; per-block sensitivity "
+                       "probes are unsupported for this model")
+    return groups
+
+
+def ordered_desc(values: dict) -> list:
+    """Block indices sorted by value descending; ties break by lower
+    index (deterministic). The ranking comparator for the mechanism
+    probe: most sensitive / most damaged first."""
+    return sorted(values, key=lambda i: (-values[i], i))
+
+
+def spearman_rho(order_a: list, order_b: list) -> float:
+    """Spearman rank correlation between two orderings of the same set.
+
+    Position rank = index in the ordering list; rho is the Pearson
+    correlation of the two position vectors. 1.0 = identical order,
+    -1.0 = exactly reversed. ValueError unless both orders cover the
+    same >= 2 elements.
+    """
+    if set(order_a) != set(order_b):
+        raise ValueError("orderings cover different elements")
+    n = len(order_a)
+    if n < 2:
+        raise ValueError("need at least 2 elements for a rank "
+                         "correlation")
+    pos_b = {v: i for i, v in enumerate(order_b)}
+    ranks_b = [pos_b[v] for v in order_a]
+    ranks_a = list(range(n))
+    ma = sum(ranks_a) / n
+    mb = sum(ranks_b) / n
+    cov = sum((a - ma) * (b - mb)
+              for a, b in zip(ranks_a, ranks_b))
+    va = sum((a - ma) ** 2 for a in ranks_a)
+    vb = sum((b - mb) ** 2 for b in ranks_b)
+    if va == 0 or vb == 0:
+        raise ValueError("degenerate ordering (no rank variance)")
+    return cov / (va ** 0.5 * vb ** 0.5)
+
+
 def quantize_model_per_layer(tensors: dict, layer_schemes: dict,
                              group_size: int = GROUP_SIZE) -> tuple:
     """Quantize each linear weight with its block's scheme; return
@@ -559,6 +616,18 @@ def parse_args(argv: list | None = None) -> argparse.Namespace:
     ap.add_argument("--base-scheme", default=None, metavar="NAME",
                     help="scheme for the remaining blocks "
                          "(requires --sensitive-layers)")
+    ap.add_argument("--sensitivity-mechanism", default=None, metavar="NAME",
+                    help="run the activation-drift mechanism probe with "
+                         "the named scheme (e.g. ternary_1step_ds): "
+                         "fp32-activation Fisher trace vs leave-one-out "
+                         "per-block damage vs trace recomputed on "
+                         "quantized activations, with Spearman rank "
+                         "correlations — the roadmap follow-up to the "
+                         "sensitivity-adaptive negative. Standalone mode; "
+                         "mutually exclusive with --schemes-driven runs, "
+                         "--one-layer/--only-names, --fisher, "
+                         "--quantize-embeddings, --obq/--obq-all and the "
+                         "per-layer mixed-precision flags")
     ap.add_argument("--obq", action="store_true",
                     help="quantize the --one-layer tensor with OBQ "
                          "error compensation (GPTQ-style block update, "
@@ -649,6 +718,25 @@ def check_mixed_args(args: argparse.Namespace) -> None:
                          "a separate protocol)")
 
 
+def check_mechanism_args(args: argparse.Namespace) -> None:
+    """Validate --sensitivity-mechanism; SystemExit on misuse. Factored
+    for testability."""
+    mech = args.sensitivity_mechanism
+    if mech is None:
+        return
+    if mech not in SCHEMES:
+        raise ValueError(f"unknown --sensitivity-mechanism scheme "
+                         f"{mech!r}; have {sorted(SCHEMES)}")
+    if (args.one_layer or args.only_names or args.obq or args.obq_all
+            or args.per_layer_schemes or args.sensitive_layers
+            is not None or args.fisher or args.quantize_embeddings):
+        raise SystemExit("--sensitivity-mechanism is a standalone mode; "
+                         "it is mutually exclusive with --one-layer/"
+                         "--only-names/--fisher/--quantize-embeddings/"
+                         "--obq/--obq-all/--per-layer-schemes/"
+                         "--sensitive-layers")
+
+
 def resolve_layer_schemes(args: argparse.Namespace, tensors: dict,
                           token_ids, text_label: str) -> tuple:
     """Resolve the mixed-precision plan into ({block: scheme}, label).
@@ -703,6 +791,165 @@ def run_mixed(tensors: dict, texts: list, assignment: dict, label: str,
                    "secs": time.time() - t0}
 
 
+def leave_one_out_ppl(tensors: dict, token_ids, scheme_name: str,
+                      group_size: int = GROUP_SIZE,
+                      blocks: list | None = None) -> list:
+    """Per-block damage probe: quantize ONLY block b's linears with
+    `scheme_name` (rest fp32), measure perplexity.
+
+    Returns [{"block": b, "ppl": float, "bpw": float}] for the requested
+    blocks (default: all blocks ascending). bpw is the scheme's own
+    bitrate — the same scheme quantizes every probed block, so the
+    blocks are comparable by construction and no matched-bitrate
+    adjustment is needed. Uses quantize_model's only_names targeting,
+    so the weight-only protocol (embeddings fp32) is unchanged.
+    """
+    if scheme_name not in SCHEMES:
+        raise KeyError(f"unknown scheme {scheme_name!r}; "
+                       f"have {sorted(SCHEMES)}")
+    groups = block_linear_names(tensors)
+    want = sorted(groups) if blocks is None else list(blocks)
+    unknown = [b for b in want if b not in groups]
+    if unknown:
+        raise ValueError(f"unknown blocks {unknown}; have "
+                         f"{sorted(groups)}")
+    rows = []
+    for b in want:
+        t0 = time.time()
+        qw, bpw = quantize_model(tensors, scheme_name, group_size,
+                                 only_names=groups[b])
+        ppl = perplexity_of(qw, token_ids)
+        rows.append({"block": b, "ppl": ppl, "bpw": bpw,
+                     "secs": time.time() - t0})
+        print(f"leave-one-out block {b:2d}: ppl {ppl:8.2f}  "
+              f"({rows[-1]['secs']:5.1f} s)", flush=True)
+    return rows
+
+
+def trace_on_quantized(tensors: dict, token_ids, scheme_name: str,
+                       group_size: int = GROUP_SIZE) -> dict:
+    """Diag-Fisher trace captured on a FULLY-quantized model's
+    activations (every linear weight at `scheme_name`).
+
+    The direct test of the activation-drift hypothesis: if this ranking
+    differs from the fp32-activation ranking, the Fisher trace used for
+    bit allocation no longer describes the model it is allocating bits
+    for once quantization is applied. Lazily imports fisher to match
+    the module's existing import pattern.
+    """
+    if scheme_name not in SCHEMES:
+        raise KeyError(f"unknown scheme {scheme_name!r}; "
+                       f"have {sorted(SCHEMES)}")
+    from .fisher import layer_fisher_trace
+    qw, _ = quantize_model(tensors, scheme_name, group_size)
+    return layer_fisher_trace(qw, token_ids)
+
+
+def run_sensitivity_mechanism(tensors: dict, token_ids, scheme_name: str,
+                              group_size: int = GROUP_SIZE,
+                              blocks: list | None = None) -> dict:
+    """The activation-drift mechanism probe (roadmap follow-up to the
+    sensitivity-adaptive negative).
+
+    Three measurements on the same eval text:
+      1. fp32 baseline perplexity + fp32-activation Fisher trace (the
+         ranking the failed experiment allocated bits by).
+      2. leave-one-out ppl damage per block (`scheme_name` on one
+         block, rest fp32) — the ground-truth block-damage ranking.
+      3. Fisher trace recomputed on the fully-quantized model's
+         activations — the drift test.
+    Returns {"fp32_ppl", "trace_fp32", "leave_one_out" (rows),
+    "trace_quantized", "rho_damage", "rho_drift"} where
+      rho_damage = spearman(fp32-trace order, leave-one-out damage order)
+      rho_drift  = spearman(fp32-trace order, quantized-trace order).
+    A low rho_damage means the fp32 ranking never predicted block-wise
+    damage; a low rho_drift means quantization shifts the activation
+    distribution enough to invalidate the ranking used for allocation.
+    `blocks` restricts the leave-one-out sweep (None = all blocks); it
+    exists so the gated suite test can probe cheaply without running
+    all 12 blocks.
+    """
+    from .fisher import layer_fisher_trace
+    print("sensitivity-mechanism probe: fp32 baseline (one forward)...",
+          flush=True)
+    fp32_ppl = perplexity_of(tensors, token_ids)
+    print(f"fp32 baseline ppl {fp32_ppl:.2f}", flush=True)
+    print("capturing fp32-activation diag-Fisher trace...", flush=True)
+    trace_fp32 = layer_fisher_trace(tensors, token_ids)
+    print(f"leave-one-out damage sweep with {scheme_name} "
+          f"(one block at a time, rest fp32)...", flush=True)
+    loo_rows = leave_one_out_ppl(tensors, token_ids, scheme_name,
+                                 group_size, blocks=blocks)
+    print(f"capturing diag-Fisher trace on {scheme_name}-quantized "
+          "activations (full-model quantize + one forward)...",
+          flush=True)
+    trace_q = trace_on_quantized(tensors, token_ids, scheme_name,
+                                 group_size)
+    order_fp32 = ordered_desc(trace_fp32)
+    probed = [r["block"] for r in loo_rows]
+    order_damage = ordered_desc({r["block"]: r["ppl"]
+                                 for r in loo_rows})
+    order_drift = ordered_desc(trace_q)
+    # The correlations compare the probed blocks only: with a restricted
+    # `blocks` subset the fp32/quantized orders must be filtered to the
+    # same set or spearman_rho would compare different element sets.
+    fp32_sub = [i for i in order_fp32 if i in set(probed)]
+    drift_sub = [i for i in order_drift if i in set(probed)]
+    return {
+        "fp32_ppl": fp32_ppl,
+        "trace_fp32": trace_fp32,
+        "leave_one_out": loo_rows,
+        "trace_quantized": trace_q,
+        "order_fp32": order_fp32,
+        "order_damage": order_damage,
+        "order_drift": order_drift,
+        "rho_damage": spearman_rho(fp32_sub, order_damage),
+        "rho_drift": spearman_rho(fp32_sub, drift_sub),
+    }
+
+
+def _qualify_rho(rho: float) -> str:
+    if rho >= 0.7:
+        return "tracks"
+    if rho >= 0.3:
+        return "weakly tracks"
+    return "does NOT track"
+
+
+def print_mechanism_report(res: dict, scheme_name: str) -> None:
+    """Print the three rankings, both rank correlations, and the
+    qualitative verdict. Thresholds (0.7/0.3) are labeled as
+    qualitative reads, not decision rules — the numbers are the
+    result."""
+    fp32 = res["fp32_ppl"]
+    print(f"\n=== sensitivity-mechanism report ({scheme_name}) ===")
+    print(f"fp32 baseline ppl: {fp32:.2f}")
+    probed = sorted(r["block"] for r in res["leave_one_out"])
+    if probed != sorted(res["trace_fp32"]):
+        print(f"(leave-one-out restricted to blocks {probed})")
+    print("\nfp32-activation Fisher trace ranking (block: trace):")
+    for i in res["order_fp32"]:
+        print(f"  block {i:2d}: {res['trace_fp32'][i]:.6g}")
+    print("\nleave-one-out damage ranking (block: ppl, delta vs fp32):")
+    by_block = {r["block"]: r for r in res["leave_one_out"]}
+    for i in res["order_damage"]:
+        ppl = by_block[i]["ppl"]
+        print(f"  block {i:2d}: ppl {ppl:8.2f}  "
+              f"delta {ppl - fp32:+8.2f}")
+    print("\nquantized-activation Fisher trace ranking (block: trace):")
+    for i in res["order_drift"]:
+        print(f"  block {i:2d}: {res['trace_quantized'][i]:.6g}")
+    rd, rr = res["rho_damage"], res["rho_drift"]
+    print(f"\nrho(fp32-trace, leave-one-out damage) = {rd:+.3f} -> "
+          f"fp32 ranking {_qualify_rho(rd)} real block damage")
+    print(f"rho(fp32-trace, quantized-activation trace) = {rr:+.3f} -> "
+          f"quantization {'shifts' if rr < 0.7 else 'does not shift'} "
+          "the sensitivity ranking")
+    print("caveats: collapse territory (ppl deltas are directional); "
+          "calibrated on the eval text (no held-out corpus); GPT-2 "
+          "124M scale")
+
+
 def main() -> None:
     args = parse_args()
     if args.one_layer and args.only_names:
@@ -728,10 +975,20 @@ def main() -> None:
         print(f"eval text {label}: {len(ids)} tokens")
     check_obq_args(args)
     check_mixed_args(args)
+    check_mechanism_args(args)
     if len(texts) > 1 and (args.obq_all or args.obq):
         print("note: OBQ probes run on the first eval text only "
               f"({texts[0][0]})")
     ids = texts[0][1]
+    if args.sensitivity_mechanism is not None:
+        if len(texts) > 1:
+            print("note: --sensitivity-mechanism runs on the first eval "
+                  f"text only ({texts[0][0]})")
+        res = run_sensitivity_mechanism(tensors, ids,
+                                        args.sensitivity_mechanism,
+                                        args.group_size)
+        print_mechanism_report(res, args.sensitivity_mechanism)
+        return
     mixed_plan = None
     if args.per_layer_schemes or args.sensitive_layers is not None:
         mixed_plan = resolve_layer_schemes(args, tensors, ids, texts[0][0])

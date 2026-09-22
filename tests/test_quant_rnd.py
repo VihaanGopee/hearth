@@ -2417,5 +2417,180 @@ class TestLayerFisherTraceGated(unittest.TestCase):
         self.assertTrue(math.isfinite(total) and total > 0)
 
 
+from src.quant_rnd import ppl as ppl_module
+from src.quant_rnd.ppl import (
+    block_linear_names,
+    check_mechanism_args,
+    leave_one_out_ppl,
+    ordered_desc,
+    run_sensitivity_mechanism,
+    spearman_rho,
+    trace_on_quantized,
+)
+
+
+class TestSensitivityMechanism(unittest.TestCase):
+    """Activation-drift mechanism probe (ppl.py): ranking helpers and
+    leave-one-out targeting mechanics on a fake weight dict; one gated
+    end-to-end smoke on the real checkpoint below."""
+
+    @staticmethod
+    def _fake_two_block_dict():
+        rng = np.random.default_rng(11)
+        return {
+            "h.0.attn.c_attn.weight":
+                rng.standard_normal((32, 64)).astype(np.float32),
+            "h.0.mlp.c_fc.weight":
+                rng.standard_normal((64, 32)).astype(np.float32),
+            "h.1.attn.c_attn.weight":
+                rng.standard_normal((32, 64)).astype(np.float32),
+            "h.1.mlp.c_fc.weight":
+                rng.standard_normal((64, 32)).astype(np.float32),
+            "wte.weight":
+                rng.standard_normal((50, 64)).astype(np.float32),
+            "h.0.attn.c_attn.bias":
+                rng.standard_normal((64,)).astype(np.float32),
+        }
+
+    def test_ordered_desc_and_tie_break(self):
+        self.assertEqual(ordered_desc({0: 1.0, 1: 3.0, 2: 2.0}),
+                         [1, 2, 0])
+        # ties break by lower index (deterministic)
+        self.assertEqual(ordered_desc({2: 5.0, 0: 5.0, 1: 5.0}),
+                         [0, 1, 2])
+
+    def test_spearman_perfect_orders(self):
+        self.assertAlmostEqual(
+            spearman_rho([0, 1, 2, 3], [0, 1, 2, 3]), 1.0)
+        self.assertAlmostEqual(
+            spearman_rho([0, 1, 2, 3], [3, 2, 1, 0]), -1.0)
+
+    def test_spearman_partial(self):
+        # one adjacent swap in 4 elements -> rho 0.8 (hand-computed)
+        self.assertAlmostEqual(
+            spearman_rho([0, 1, 2, 3], [0, 1, 3, 2]), 0.8)
+
+    def test_spearman_rejects_mismatched_or_degenerate(self):
+        with self.assertRaises(ValueError):
+            spearman_rho([0, 1, 2], [0, 1, 3])
+        with self.assertRaises(ValueError):
+            spearman_rho([0], [0])
+
+    def test_block_linear_names_groups_and_excludes(self):
+        groups = block_linear_names(self._fake_two_block_dict())
+        self.assertEqual(set(groups), {0, 1})
+        self.assertEqual(groups[0],
+                         {"h.0.attn.c_attn.weight", "h.0.mlp.c_fc.weight"})
+        self.assertEqual(groups[1],
+                         {"h.1.attn.c_attn.weight", "h.1.mlp.c_fc.weight"})
+
+    def test_block_linear_names_rejects_blockless(self):
+        with self.assertRaises(KeyError):
+            block_linear_names(
+                {"wte.weight": np.zeros((4, 4), dtype=np.float32)})
+
+    def test_leave_one_out_targets_exactly_one_block(self):
+        fake = self._fake_two_block_dict()
+        seen = []
+
+        def fake_ppl(tensors, ids):
+            changed = sorted(n for n in tensors
+                             if not np.array_equal(tensors[n], fake[n]))
+            seen.append(changed)
+            return 100.0 + len(changed)
+
+        orig = ppl_module.perplexity_of
+        ppl_module.perplexity_of = fake_ppl
+        try:
+            rows = leave_one_out_ppl(fake, [0, 1, 2], "ternary_1step",
+                                     group_size=32)
+        finally:
+            ppl_module.perplexity_of = orig
+        self.assertEqual([r["block"] for r in rows], [0, 1])
+        self.assertEqual(set(seen[0]),
+                         {"h.0.attn.c_attn.weight", "h.0.mlp.c_fc.weight"})
+        self.assertEqual(set(seen[1]),
+                         {"h.1.attn.c_attn.weight", "h.1.mlp.c_fc.weight"})
+        for r in rows:
+            self.assertTrue(math.isfinite(r["ppl"]) and r["ppl"] > 0)
+            self.assertTrue(math.isfinite(r["bpw"]) and r["bpw"] > 0)
+
+    def test_leave_one_out_blocks_arg_unknown_scheme_and_block(self):
+        fake = self._fake_two_block_dict()
+
+        def fake_ppl(tensors, ids):
+            return 42.0
+
+        orig = ppl_module.perplexity_of
+        ppl_module.perplexity_of = fake_ppl
+        try:
+            rows = leave_one_out_ppl(fake, [0], "ternary_1step",
+                                     group_size=32, blocks=[1])
+        finally:
+            ppl_module.perplexity_of = orig
+        self.assertEqual([r["block"] for r in rows], [1])
+        with self.assertRaises(KeyError):
+            leave_one_out_ppl(fake, [0], "no_such_scheme")
+        with self.assertRaises(ValueError):
+            leave_one_out_ppl(fake, [0], "ternary_1step", blocks=[7])
+
+    def test_trace_on_quantized_uses_fisher_plumbing(self):
+        import src.quant_rnd.fisher as fisher_mod
+        fake = self._fake_two_block_dict()
+        captured = {}
+
+        def fake_trace(tensors, ids):
+            captured["keys"] = set(tensors)
+            return {0: 1.0, 1: 2.0}
+
+        orig = fisher_mod.layer_fisher_trace
+        fisher_mod.layer_fisher_trace = fake_trace
+        try:
+            out = trace_on_quantized(fake, [0, 1], "ternary_1step",
+                                     group_size=32)
+        finally:
+            fisher_mod.layer_fisher_trace = orig
+        self.assertEqual(out, {0: 1.0, 1: 2.0})
+        # the trace ran on the fully-quantized weight dict (all keys
+        # present), not on a per-block subset
+        self.assertEqual(captured["keys"], set(fake))
+
+    def test_check_mechanism_args(self):
+        args = ppl_parse_args(["m.safetensors", "--sensitivity-mechanism",
+                               "ternary_1step_ds"])
+        check_mechanism_args(args)  # must not raise
+        bad = ppl_parse_args(["m.safetensors", "--sensitivity-mechanism",
+                              "ternary_1step_ds", "--fisher"])
+        with self.assertRaises(SystemExit):
+            check_mechanism_args(bad)
+        bad2 = ppl_parse_args(["m.safetensors", "--sensitivity-mechanism",
+                               "no_such_scheme"])
+        with self.assertRaises(ValueError):
+            check_mechanism_args(bad2)
+
+
+@unittest.skipUnless(os.path.exists(GPT2_WEIGHTS), "gpt2 weights not present")
+class TestSensitivityMechanismGated(unittest.TestCase):
+    """Gated: the mechanism probe on the real GPT-2 checkpoint, 2 blocks
+    x 16 tokens (~4 cheap forwards). Pins the plumbing end to end."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tensors = read_safetensors(GPT2_WEIGHTS)
+
+    def test_mechanism_probe_two_blocks(self):
+        ids = list(range(16))
+        res = run_sensitivity_mechanism(self.tensors, ids, "ternary_1step",
+                                        group_size=128, blocks=[0, 11])
+        self.assertTrue(math.isfinite(res["fp32_ppl"])
+                        and res["fp32_ppl"] > 0)
+        self.assertEqual(set(res["trace_fp32"]), set(range(12)))
+        self.assertEqual([r["block"] for r in res["leave_one_out"]],
+                         [0, 11])
+        self.assertEqual(set(res["trace_quantized"]), set(range(12)))
+        for key in ("rho_damage", "rho_drift"):
+            self.assertTrue(-1.0 <= res[key] <= 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

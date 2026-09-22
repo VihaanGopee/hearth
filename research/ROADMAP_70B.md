@@ -299,7 +299,16 @@ measuring where quality actually breaks.
       Testable: compare the fp32-activation Fisher ranking against the
       ranking recomputed on activations from a partially-quantized model,
       or against leave-one-block-quantized ppl deltas. Would turn the
-      negative into a mechanism. (NEW 2026-09-21)
+      negative into a mechanism. (NEW 2026-09-21) — HARNESS LANDED
+      2026-09-21 (commit c7aa8b6): `ppl.py --sensitivity-mechanism
+      SCHEME` (leave_one_out_ppl + trace_on_quantized + spearman_rho,
+      415 tests green); the full 12-block measurement run is in flight.
+- [ ] Quant R&D: activation-drift probe, scheme-specificity check —
+      repeat `--sensitivity-mechanism` with ternary_1step (the second
+      datapoint's base scheme) if the ternary_1step_ds run shows an
+      interesting rho pattern; a divergent result would say the drift
+      mechanism is scheme-dependent, a matching one that it is generic
+      to sub-2-bit group-wise quantization. (NEW 2026-09-21)
 - [x] Quant R&D: sweep outlier_frac / n_outliers for the Pareto frontier
       (SQNR vs bpw) — landed 2026-09-20 as `src/quant_rnd/sweep.py`
       (seed 7). Frontier: ternary family below ~2.06 bpw (ternary_uniform
