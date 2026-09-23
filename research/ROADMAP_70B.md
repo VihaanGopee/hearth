@@ -935,6 +935,16 @@ measuring where quality actually breaks.
       2026-09-21 still the freshest 2-bpw-class; MilesQLi 2026-09-02
       exists but is not the 2.49bpw test file; darkbit1001 ships
       DFlash-EXL3 variants 4.50/6.00bpw).
+      RECIPE 2026-09-22 ~19:50 PDT: the second rung-4 candidate is now
+      documented at research/recipes/RUNG4_exl3_mlxl3.md (yeasah
+      2.08bpw EXL3 via the mlxl3 one-shot CLI bridge: 9.88 GiB
+      author-reported resident + 0.04 KV + ~1.0 runtime ≈ 10.9 GB —
+      inside budget but tight; mlxl3's resident UNMEASURED;
+      M1 Pro perf unmeasured; roofline floor 20.2 tok/s; Mac-side steps
+      incl. the stdout-shape validation that the agent.py wiring waits
+      on). Budget/caveat figures pinned in tests/test_rung_recipes.py;
+      profile notes point at the recipe. JANG_2S stays the primary
+      rung-4 candidate (same-base 3.5, real HTTP transport).
       DOC CHECK 2026-09-22 ~17:50 PDT: mlxl3 v1.1.1 README re-read end to
       end — still NO HTTP/OpenAI server surface. The three shipped pieces
       are MLXL3 Desktop (SwiftUI chat), the `mlxl3` streaming CLI
