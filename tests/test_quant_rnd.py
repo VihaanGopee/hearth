@@ -995,6 +995,78 @@ class TestOpCount(unittest.TestCase):
             prefill_crossover_L(op_t, 1.710, op_k, 2.375,
                                prompt_lens=(4096, 4096), **kw)
 
+    def test_prefill_storage_bpw_default_is_bpw(self):
+        # storage_bpw omitted == storage_bpw=bpw: the prefill figures the
+        # roadmap pins (crossover_L=65536, ratios 1.629@4k etc.) are
+        # computed at the entropy rate, so the default must be
+        # bit-identical to the old byte term.
+        kw = dict(n_params=N_PARAMS_70B, bpw=1.710,
+                  opcount=ternary_opcount(0.41), prompt_len=4096,
+                  bandwidth_gbs=M1_PRO_MEM_BW_GBS, peak_flops=5.2e12)
+        default = prefill_roofline_tps(**kw)
+        explicit = prefill_roofline_tps(storage_bpw=1.710, **kw)
+        self.assertEqual(default, explicit)
+
+    def test_prefill_storage_bpw_moves_bytes_not_ops(self):
+        # The packable ternary storage rate (2.125 @ g128) vs the entropy
+        # rate (1.710): bytes_moved shifts by exactly the weight-bytes
+        # delta, total_flops is untouched. At a bandwidth-bound short
+        # prompt the ceiling scales by the byte ratio; at a compute-bound
+        # long prompt the ceiling is unchanged (bytes don't bind).
+        kw = dict(n_params=N_PARAMS_70B, bpw=1.710,
+                  opcount=ternary_opcount(0.41, group_size=128),
+                  bandwidth_gbs=M1_PRO_MEM_BW_GBS, peak_flops=5.2e12)
+        s = ternary_storage_bpw(128, 1)  # 2.125
+        p1 = prefill_roofline_tps(prompt_len=1, **kw)
+        p1s = prefill_roofline_tps(prompt_len=1, storage_bpw=s, **kw)
+        self.assertAlmostEqual(
+            p1s["bytes_moved"] - p1["bytes_moved"],
+            weight_bytes(N_PARAMS_70B, s) - weight_bytes(N_PARAMS_70B, 1.710),
+            delta=1.0)
+        self.assertEqual(p1s["total_flops"], p1["total_flops"])
+        self.assertTrue(p1s["bandwidth_bound"])
+        # Bandwidth-bound -> ceiling scales with the inverse byte ratio.
+        self.assertAlmostEqual(p1s["ceil_tps"] / p1["ceil_tps"],
+                               p1["bytes_moved"] / p1s["bytes_moved"],
+                               delta=1e-9)
+        p4 = prefill_roofline_tps(prompt_len=4096, **kw)
+        p4s = prefill_roofline_tps(prompt_len=4096, storage_bpw=s, **kw)
+        self.assertFalse(p4s["bandwidth_bound"])
+        self.assertEqual(p4s["ceil_tps"], p4["ceil_tps"])
+        # Input validation.
+        with self.assertRaises(ValueError):
+            prefill_roofline_tps(prompt_len=4096, storage_bpw=0.0, **kw)
+        with self.assertRaises(ValueError):
+            prefill_roofline_tps(prompt_len=4096, storage_bpw=-1.0, **kw)
+
+    def test_prefill_storage_bpw_crossover_forwarding(self):
+        # prefill_crossover_L forwards storage_bpw_a/_b to the byte term:
+        # its ratios must equal ratios hand-computed from
+        # prefill_roofline_tps with the same storage rates. And because
+        # the swept lengths (4k+) are compute-bound (bytes don't bind),
+        # the pinned crossover figure is INVARIANT to the storage-rate
+        # correction -- the entropy-rate pins (crossover_L=65536,
+        # ratios) carry over unchanged.
+        op_t = ternary_opcount(0.41, n_scales=1, group_size=128)
+        op_k = codebook_opcount(128, n_centroids=4, n_scales=1,
+                               method="histogram")
+        s_t = ternary_storage_bpw(128, 1)  # 2.125 packable
+        kw = dict(n_params=N_PARAMS_70B, bandwidth_gbs=M1_PRO_MEM_BW_GBS,
+                  peak_flops=5.2e12, n_layers=80, n_q_heads=64,
+                  n_kv_heads=8, head_dim=128)
+        r = prefill_crossover_L(op_t, 1.710, op_k, 2.375,
+                               storage_bpw_a=s_t, storage_bpw_b=2.375, **kw)
+        for L, ratio in zip(r["prompt_lens"], r["ratios"]):
+            ca = prefill_roofline_tps(prompt_len=L, opcount=op_t, bpw=1.710,
+                                      storage_bpw=s_t, **kw)["ceil_tps"]
+            cb = prefill_roofline_tps(prompt_len=L, opcount=op_k, bpw=2.375,
+                                      storage_bpw=2.375, **kw)["ceil_tps"]
+            self.assertAlmostEqual(ratio, ca / cb, delta=1e-12)
+        r_plain = prefill_crossover_L(op_t, 1.710, op_k, 2.375, **kw)
+        self.assertEqual(r["crossover_L"], r_plain["crossover_L"])
+        self.assertEqual(r["crossover_L"], 65536)
+        self.assertEqual(r["ratios"], r_plain["ratios"])
+
 
 class TestTernaryLloyd(unittest.TestCase):
     """Candidate C: Lloyd with the codebook constrained to ternary."""

@@ -482,7 +482,17 @@ measuring where quality actually breaks.
       over int2_kmeans_q8's 9.0 t/s. Energy-proxy (3.52x) and prefill
       compute-bound (1.795x) ratios are op-driven and survive. Budget
       consequence: 18.59 GB is further over the 10–11 GB budget — avenue C
-      stays closed, more firmly.
+      stays closed, more firmly. CORRECTION COMPLETE 2026-09-22 (~17:20
+      session): the 17:00 session's open question is now closed —
+      `prefill_roofline_tps` takes an optional `storage_bpw` (defaults to
+      bpw, back-compat; same pattern as `scheme_report`), driving the
+      weight-bytes term; `prefill_crossover_L` gains
+      `storage_bpw_a`/`storage_bpw_b` and forwards them. Result measured:
+      the pinned crossover figures are INVARIANT to the correction
+      (crossover_L=65536, ratios identical) because the swept lengths
+      (4k+) are compute-bound where bytes don't bind; the byte term only
+      moves bandwidth-bound short-prompt ceilings. 3 new tests; the
+      entropy-vs-storage split is now consistent on both roofline paths.
 - [x] Quant R&D: opcount storage-bpw correction — LANDED 2026-09-22:
       `scheme_report` gains an optional `storage_bpw` (defaults to bpw;
       back-compat — codebook schemes already pass true storage rates),

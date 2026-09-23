@@ -116,7 +116,8 @@ def prefill_roofline_tps(n_params: float, bpw: float, opcount: dict,
                          n_q_heads: int = 64, n_kv_heads: int = 8,
                          head_dim: int = 128,
                          bytes_per_elem: int = 2,
-                         include_attention: bool = True) -> dict:
+                         include_attention: bool = True,
+                         storage_bpw: float = None) -> dict:
     """Optimistic prefill ceiling in tok/s for one prompt of prompt_len.
 
     Model: weights are streamed once (weight_bytes), activations move an
@@ -134,6 +135,14 @@ def prefill_roofline_tps(n_params: float, bpw: float, opcount: dict,
     published peak for the engine you model, e.g. the Apple-published
     5.2 TFLOPS FP32 for the M1 Pro GPU.
 
+    bpw is the entropy/comparison rate; storage_bpw is the packable
+    on-disk rate that actually sets the streamed weight bytes (see the
+    module docstring and scheme_report). It defaults to bpw (correct for
+    codebook schemes, whose bpw already counts the stored codebook); for
+    the ternary family pass ternary_storage_bpw(group_size, n_scales).
+    At compute-bound lengths the byte term does not bind, so the
+    storage/entropy choice only matters at short prompts.
+
     Honest caveats: adds are counted as 1 FLOP against an FMA-counted
     peak, so this is CONSERVATIVE for add-dominated ternary kernels --
     on FMA hardware an add-only kernel can approach 2x this ceiling, but
@@ -150,6 +159,9 @@ def prefill_roofline_tps(n_params: float, bpw: float, opcount: dict,
         raise ValueError("efficiency must be in (0, 1]")
     if n_q_heads < 1:
         raise ValueError("n_q_heads must be a positive integer")
+    if storage_bpw is not None and storage_bpw <= 0:
+        raise ValueError("storage_bpw must be positive")
+    sbpw = bpw if storage_bpw is None else storage_bpw
     flops_per_token = n_params * (opcount["adds"] + opcount["muls"])
     matmul_flops = flops_per_token * prompt_len
     attention_flops = 0.0
@@ -161,7 +173,7 @@ def prefill_roofline_tps(n_params: float, bpw: float, opcount: dict,
                                    head_dim=head_dim, ctx=prompt_len,
                                    bytes_per_elem=bytes_per_elem)
     total_flops = matmul_flops + attention_flops
-    weight_B = weight_bytes(n_params, bpw)
+    weight_B = weight_bytes(n_params, sbpw)
     act_B = (prompt_len * n_layers * d_model * bytes_per_elem
              * _PREFILL_ACT_TRAFFIC_ELEMS)
     kv_write_B = kv_cache_bytes(n_layers=n_layers, n_kv_heads=n_kv_heads,
@@ -345,6 +357,8 @@ def prefill_crossover_L(op_a: dict, bpw_a: float, op_b: dict, bpw_b: float,
                         *, prompt_lens=(4096, 8192, 16384, 32768, 65536,
                                         131072),
                         threshold: float = 1.2,
+                        storage_bpw_a: float = None,
+                        storage_bpw_b: float = None,
                         **roofline_kwargs) -> dict:
     """Sweep prefill ceilings over prompt lengths and pin where scheme A's
     advantage over scheme B compresses below `threshold`.
@@ -358,8 +372,11 @@ def prefill_crossover_L(op_a: dict, bpw_a: float, op_b: dict, bpw_b: float,
 
     op_a / bpw_a are scheme A's per-weight op-count dict and bits/param
     (A is the scheme expected to be faster, so ratios sit above 1);
-    op_b / bpw_b likewise for B. roofline_kwargs are forwarded to
-    prefill_roofline_tps (must include bandwidth_gbs and peak_flops).
+    op_b / bpw_b likewise for B. storage_bpw_a / storage_bpw_b are the
+    packable storage rates forwarded to prefill_roofline_tps (defaulting
+    to bpw_a / bpw_b); they only matter at bandwidth-bound prompt
+    lengths. roofline_kwargs are forwarded to prefill_roofline_tps (must
+    include bandwidth_gbs and peak_flops).
 
     Returns a dict with the swept lens, per-L ceilings and ratios, and
     "crossover_L": the first prompt length where the ratio drops below
@@ -378,9 +395,11 @@ def prefill_crossover_L(op_a: dict, bpw_a: float, op_b: dict, bpw_b: float,
     ratios, ceil_a, ceil_b = [], [], []
     for L in lens:
         ca = prefill_roofline_tps(prompt_len=int(L), opcount=op_a,
-                                  bpw=bpw_a, **roofline_kwargs)["ceil_tps"]
+                                  bpw=bpw_a, storage_bpw=storage_bpw_a,
+                                  **roofline_kwargs)["ceil_tps"]
         cb = prefill_roofline_tps(prompt_len=int(L), opcount=op_b,
-                                  bpw=bpw_b, **roofline_kwargs)["ceil_tps"]
+                                  bpw=bpw_b, storage_bpw=storage_bpw_b,
+                                  **roofline_kwargs)["ceil_tps"]
         ceil_a.append(ca)
         ceil_b.append(cb)
         ratios.append(ca / cb)
