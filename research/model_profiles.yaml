@@ -120,6 +120,38 @@ profiles:
       Served by vmlx (or MLX Studio Server mode) over OpenAI-compatible
       HTTP; Hearth drives it via `backend: openai`.
 
+  - name: qwen3.6-35b-a3b-exl3-2bpw
+    params_b: 35
+    quant: EXL3-2.08bpw
+    est_gb: 11.6
+    backend: exl3
+    status: watch
+    notes: >
+      Prebuilt EXL3 quant of Qwen3.6-35B-A3B (repo
+      yeasah/Qwen3.6-35B-A3B-exl3, published 2026-09-21; per-bitrate
+      weights live as git revisions, invisible on main). Author-reported
+      figures (NOT independently measured): qbench (openwebtext10k, 10 x
+      2048-token rows) 2.00bpw-H5 ppl 10.865 / KLD 0.1136 vs bf16 10.097
+      (+7.6%) at 2.13 bpw_layer; 3.00bpw-H5 +1.1% / KLD 0.0302; 6.00bpw
+      ppl-identical to bf16. README claims 2.08 bpw = 10.83 GiB disk
+      (tree API measures 11.72 GB across 2 shards) / 9.88 GiB VRAM under
+      exllamav3 with embeddings CPU-offloaded — INSIDE the 10-11 GB
+      usable budget fully resident. Sibling Ornith-1.5-35B-A3B-exl3
+      confirms the curve on a second 35B-A3B MoE (2.00bpw-H5 ppl 12.336
+      vs bf16 11.431, +7.9%, KLD 0.1775, 9.6 GB VRAM). This is the best
+      ~2-bpw 35B-A3B fidelity datapoint on record (+7.6% ppl vs JANG_2S's
+      author-claimed 65.5% MMLU and oQ2's measured 64% MMLU on the 3.5
+      variant). BLOCKED on Mac transport: mlxl3 (the only Apple-Silicon
+      EXL3 engine, v1.1.1 — Qwen3.6-35B-A3B EXL3 2.49bpw TESTED on M5 at
+      47.545 tok/s median decode, DFlash2 speculative 74.645 tok/s) ships
+      NO HTTP/OpenAI server surface (Desktop chat + `mlxl3 run` CLI
+      only; README re-checked 2026-09-22 — transport gap stands), and
+      the exllamav3 / vLLM engines are CUDA-only. M1 Pro perf is
+      unmeasured (M5-only campaign); mlxl3 release build requires macOS
+      26.2+. Comparison caveat: 3.6 base vs rung-3's 3.5 base, so not
+      same-base — a Qwen3.5-35B-A3B 2bpw EXL3 upload would enable the
+      apples-to-apples comparison vs IQ2_XXS.
+
   - name: qwen3-30b-a3b-Q3_K_M
     params_b: 30
     quant: Q3_K_M

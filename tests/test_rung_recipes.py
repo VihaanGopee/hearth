@@ -240,9 +240,24 @@ class TestModelProfiles(unittest.TestCase):
         self.assertIn("Jundot/Qwen3.6-35B-A3B-oQ2", p["notes"])
         self.assertNotIn("Fits comfortably", p["notes"])
 
+    def test_exl3_profile_figures_pinned(self):
+        # yeasah/Qwen3.6-35B-A3B-exl3, published 2026-09-21. Figures are
+        # author-reported in the repo README (not independently measured):
+        # 2.08 bpw = 10.83 GiB disk, 9.88 GiB VRAM under exllamav3 with
+        # embeddings CPU-offloaded; qbench 2.00bpw-H5 ppl 10.865 vs bf16
+        # 10.097 (+7.6%). est_gb carries the on-disk size (10.83 GiB).
+        p = self._by_name("qwen3.6-35b-a3b-exl3-2bpw")
+        self.assertAlmostEqual(p["est_gb"], 11.6, delta=0.5)
+        self.assertEqual(p["status"], "watch", "EXL3 is transport-blocked")
+        self.assertEqual(p["backend"], "exl3")
+        self.assertIn("yeasah/Qwen3.6-35B-A3B-exl3", p["notes"])
+        self.assertIn("9.88", p["notes"])
+        self.assertIn("Author-reported", p["notes"])
+        self.assertIn("NO HTTP/OpenAI server surface", p["notes"])
+
     def test_profiles_have_known_backends(self):
         for p in self._profiles():
-            self.assertIn(p["backend"], ("ollama", "llamacpp", "mlx", "bitnet.cpp", "openai"),
+            self.assertIn(p["backend"], ("ollama", "llamacpp", "mlx", "bitnet.cpp", "openai", "exl3"),
                           p["name"])
 
 

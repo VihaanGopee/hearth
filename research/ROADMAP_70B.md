@@ -935,6 +935,30 @@ measuring where quality actually breaks.
       2026-09-21 still the freshest 2-bpw-class; MilesQLi 2026-09-02
       exists but is not the 2.49bpw test file; darkbit1001 ships
       DFlash-EXL3 variants 4.50/6.00bpw).
+      DOC CHECK 2026-09-22 ~17:50 PDT: mlxl3 v1.1.1 README re-read end to
+      end — still NO HTTP/OpenAI server surface. The three shipped pieces
+      are MLXL3 Desktop (SwiftUI chat), the `mlxl3` streaming CLI
+      (`mlxl3 run` interactive chat + one-shot `--prompt ... --max-tokens
+      N`), and the Rust/Metal runtime; plus MCP + HF catalogue downloads.
+      Transport gap stands: Hearth has no wire to it. DFlash2 remains
+      opt-in, greedy-only, M5-only, separate draft weights. The one-shot
+      `--prompt` mode is the hook a CLI-subprocess bridge would use (see
+      new backlog item below). The 2.08bpw EXL3 candidate is now tracked
+      as a profile in research/model_profiles.yaml (status: watch).
+- [ ] Hearth: mlxl3 CLI-subprocess bridge design — NEW 2026-09-22: if
+      mlxl3 never ships server mode, the one-shot `mlxl3 run <model>
+      --prompt "..." --max-tokens N` CLI is the only programmatic hook.
+      An OpenAI-shaped subprocess adapter in Hearth would unlock the
+      2.08bpw EXL3 weights (research/model_profiles.yaml, status watch)
+      for tools/measure_openai.py + tools/eval_battery_openai.py without
+      HTTP. Caveats (all Mac-side, unverifiable from here): CLI is
+      greedy-only (no temperature), stdout parsing unvalidated, per-call
+      model-load cost unknown (check `mlxl3 run --help` on the Mac — if
+      it reloads weights per invocation the bridge is a batch tool, not
+      an interactive backend), DFlash2 toggle is a Desktop switch (verify
+      any CLI exposure). Write the adapter against a stub fake-CLI for
+      tests; mark untested-on-Mac; do not wire as any default. Only
+      pursue if server mode doesn't land.
 - [x] Quant R&D: JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S candidate — NEW
       2026-09-21 (pm sweep): prebuilt MLX JANG 2-bit for OUR rung-3
       model. Measured **11.67 GB** via HF tree API — but the model card
