@@ -21,6 +21,7 @@ from tools.watch_sweep import (
     check_novamlx_release,
     check_tq_gguf_70b,
     check_vmlx_oq_loader,
+    check_vmlx_smelt_issues,
     diff_check,
     format_baseline,
     format_report,
@@ -210,6 +211,105 @@ class TestVmlxOqLoader(unittest.TestCase):
         self.assertEqual(lines, [])
 
 
+class TestVmlxSmeltIssues(unittest.TestCase):
+    FRAG = "jjang-ai/vmlx/issues"
+
+    def _issue(self, number, title, body="", pr=False, updated="2026-09-22T00:00:00Z"):
+        i = {
+            "number": number,
+            "title": title,
+            "body": body,
+            "updated_at": updated,
+        }
+        if pr:
+            i["pull_request"] = {"url": "https://api.github.com/..."}
+        return i
+
+    def test_matches_title_case_insensitive(self):
+        get = FakeGet(
+            [(self.FRAG, [self._issue(235, "SMELT serves wrong tokens on 3.5")])]
+        )
+        d = check_vmlx_smelt_issues(get)
+        self.assertEqual(d["open_issue_count"], 1)
+        self.assertEqual([e["id"] for e in d["open_smelt_issues"]], ["#235"])
+        self.assertFalse(d["open_smelt_issues"][0]["is_pr"])
+
+    def test_matches_body_only(self):
+        get = FakeGet(
+            [(self.FRAG, [self._issue(222, "repeated junk tokens", body="fails under --smelt 50")])]
+        )
+        d = check_vmlx_smelt_issues(get)
+        self.assertEqual([e["id"] for e in d["open_smelt_issues"]], ["#222"])
+
+    def test_non_matching_issue_excluded(self):
+        get = FakeGet(
+            [(self.FRAG, [self._issue(300, "MTP head not found on oQ2 weights")])]
+        )
+        d = check_vmlx_smelt_issues(get)
+        self.assertEqual(d["open_smelt_issues"], [])
+        self.assertEqual(d["open_issue_count"], 1)
+
+    def test_pull_requests_marked(self):
+        get = FakeGet(
+            [(self.FRAG, [self._issue(250, "fix smelt norm shift", pr=True)])]
+        )
+        d = check_vmlx_smelt_issues(get)
+        self.assertTrue(d["open_smelt_issues"][0]["is_pr"])
+
+    def test_title_truncated_and_sorted_by_updated(self):
+        long_title = "smelt " + "x" * 100
+        get = FakeGet(
+            [
+                (
+                    self.FRAG,
+                    [
+                        self._issue(2, "smelt again", updated="2026-09-22T01:00:00Z"),
+                        self._issue(1, long_title, updated="2026-09-21T00:00:00Z"),
+                    ],
+                )
+            ]
+        )
+        d = check_vmlx_smelt_issues(get)
+        first, second = d["open_smelt_issues"]
+        self.assertEqual(first["number"], 1)
+        self.assertEqual(second["number"], 2)
+        self.assertEqual(len(first["title"]), 80)
+
+    def test_non_list_payload_is_watch_error(self):
+        get = FakeGet([(self.FRAG, {"message": "API rate limit exceeded"})])
+        with self.assertRaises(WatchError):
+            check_vmlx_smelt_issues(get)
+
+    def test_diff_reports_new_and_closed(self):
+        old = {"open_smelt_issues": [{"id": "#222", "number": 222}], "open_issue_count": 1}
+        new = {"open_smelt_issues": [{"id": "#235", "number": 235}], "open_issue_count": 1}
+        changed, lines = diff_check("vmlx_smelt_issues", old, new)
+        self.assertTrue(changed)
+        self.assertTrue(any("NEW #235" in l for l in lines))
+        self.assertTrue(any("GONE #222" in l for l in lines))
+
+    def test_diff_reports_open_issue_count_scalar(self):
+        old = {"open_smelt_issues": [], "open_issue_count": 12}
+        new = {"open_smelt_issues": [], "open_issue_count": 14}
+        changed, lines = diff_check("vmlx_smelt_issues", old, new)
+        self.assertTrue(changed)
+        self.assertTrue(any("open issues 12 -> 14" in l for l in lines))
+
+    def test_diff_silent_when_unchanged(self):
+        d = {"open_smelt_issues": [], "open_issue_count": 12}
+        changed, lines = diff_check("vmlx_smelt_issues", d, dict(d))
+        self.assertFalse(changed)
+
+    def test_baseline_line(self):
+        get = FakeGet(
+            [(self.FRAG, [self._issue(235, "smelt norm shift on 35B-A3B", pr=True)])]
+        )
+        bl = format_baseline({"vmlx_smelt_issues": check_vmlx_smelt_issues(get)}, {})
+        self.assertEqual(len(bl), 1)
+        self.assertIn("vmlx_smelt_issues: 1 open issues, smelt-mentioned: #235", bl[0])
+        self.assertIn("[PR]", bl[0])
+
+
 class TestDdalcuCheck(unittest.TestCase):
     def test_json_serializable(self):
         get = FakeGet(
@@ -289,24 +389,26 @@ class TestRunSweep(unittest.TestCase):
                 {"type": "file", "name": "load_jangtq.py"},
                 {"type": "file", "name": "load_laguna.py"},
             ]),
+            ("jjang-ai/vmlx/issues", []),
             ("jjang-ai/vmlx", [{"tag_name": "v1.6.64", "published_at": "2026-09-19"}]),
             ("0xZKnw/mlxl3", [{"tag_name": "v1.1.1", "published_at": "2026-09-22"}]),
             ("cnshsliu/novamlx", [{"tag_name": "v0.9.0", "published_at": "2026-09-20"}]),
             ("search=35B-A3B-exl3", [_entry("yeasah/Qwen3.6-35B-A3B-exl3")]),
         ]
 
-    def test_all_eleven_checks_run(self):
+    def test_all_twelve_checks_run(self):
         results, errors = run_sweep(FakeGet(self._routes()))
         self.assertEqual(errors, {})
-        self.assertEqual(len(results), 11)
-        self.assertEqual(len(CHECKS), 11)
+        self.assertEqual(len(results), 12)
+        self.assertEqual(len(CHECKS), 12)
 
     def test_one_failing_check_does_not_kill_sweep(self):
         get = FakeGet(self._routes(), fail=("jjang-ai/vmlx",))
         results, errors = run_sweep(get)
-        # both vmlx checks fetch URLs containing the fragment, both fail
+        # all three vmlx checks fetch URLs containing the fragment
         self.assertIn("vmlx_release", errors)
         self.assertIn("vmlx_oq_loader", errors)
+        self.assertIn("vmlx_smelt_issues", errors)
         self.assertEqual(len(results), 9)
 
     def test_report_and_baseline(self):
@@ -317,11 +419,13 @@ class TestRunSweep(unittest.TestCase):
         self.assertIn("BASELINE:", report)
         self.assertIn("tq: >=60B entries:", report)
         bl = format_baseline(results, errors)
-        self.assertEqual(len(bl), 11)
+        self.assertEqual(len(bl), 12)
         # release lines render tag + date
         self.assertTrue(any("v1.6.64" in l for l in bl))
         # oQ loader line renders absence
         self.assertTrue(any("vmlx_oq_loader: oQ loader absent" in l for l in bl))
+        # smelt-issues line renders its zero state
+        self.assertTrue(any("vmlx_smelt_issues: 0 open issues" in l for l in bl))
 
     def test_ddalcu_baseline_names_hit_ids(self):
         results = {

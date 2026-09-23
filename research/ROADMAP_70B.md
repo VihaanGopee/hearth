@@ -1630,7 +1630,24 @@ measuring where quality actually breaks.
       real GitHub API: novamlx **v1.4.1 (2026-09-16)** is the current
       release — baseline recorded, and the other 9 checks reported no
       changes vs the 15:15 snapshot.
+      UPDATED 2026-09-22 (~20:50 session): 12th check added —
+      `vmlx_smelt_issues` (open vmlx GitHub issues mentioning Smelt in
+      title/body; PRs included and marked). This automates the rung-4
+      JANG_2S recipe's explicit watch ("watch vmlx release notes for
+      Smelt loader regressions") — issue traffic is the earlier signal.
+      Delta machinery covers it: `_ids_of` picks up `#<number>` ids for
+      NEW/GONE lines plus an "open issues" scalar count. 10 new tests
+      incl. delta + baseline rendering; live run verified end to end:
+      47 open vmlx issues, zero smelt-mentioned — baseline recorded, so
+      the next sweep's CHANGES section will flag any Smelt issue traffic.
       (NEW 2026-09-22)
+- [ ] Watch follow-up: recently-closed vmlx issues mentioning Smelt as a
+      fix signal — the `vmlx_smelt_issues` check scans OPEN issues only;
+      a Smelt regression that gets FIXED shows up as a closed issue and
+      would slip past the delta machinery. A closed-issues scan
+      (updated-since-last-sweep) would catch both fixes and regression
+      confirmations; until then, skim closed vmlx issues manually when a
+      Smelt issue disappears from the open scan. (NEW 2026-09-22)
 
 ## Ground rules for this research track
 

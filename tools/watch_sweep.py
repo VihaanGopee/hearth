@@ -21,6 +21,9 @@ Checks:
   11. vmlx_oq_loader — whether vmlx main ships an oQ-format loader (the
       dormant oQ2 rung-4 path: Jundot's oQ family has the best measured
       ~2-bit 35B datapoint but vmlx can't serve it)
+  12. vmlx_smelt_issues — open vmlx GitHub issues mentioning Smelt (the
+      rung-4 recipe's explicit watch: Smelt loader regressions would show
+      up as issue traffic before release notes)
 
 Usage:
     python3 -m tools.watch_sweep [--snapshot PATH] [--full]
@@ -263,6 +266,38 @@ def check_vmlx_oq_loader(get):
     }
 
 
+def check_vmlx_smelt_issues(get):
+    """Open vmlx GitHub issues mentioning Smelt.
+
+    The rung-4 JANG_2S recipe (research/recipes/RUNG4_jang2s_35b_smelt.md)
+    says to watch vmlx release notes for Smelt loader regressions; issue
+    traffic is the earlier signal, so the sweep tracks it directly. A new
+    open issue mentioning Smelt (or one closing) shows up in the sweep
+    deltas. PRs also appear in the issues API and are included (marked).
+    """
+    issues = get("%s/jjang-ai/vmlx/issues?state=open&per_page=100" % _GH)
+    if not isinstance(issues, list):
+        raise WatchError("unexpected issues payload: %r" % (issues,))
+    smelt = []
+    for i in issues:
+        if not isinstance(i, dict):
+            continue
+        hay = ((i.get("title") or "") + "\n" + (i.get("body") or "")).lower()
+        if "smelt" not in hay:
+            continue
+        smelt.append(
+            {
+                "id": "#%s" % i.get("number"),
+                "number": i.get("number"),
+                "title": (i.get("title") or "")[:80],
+                "updated_at": i.get("updated_at"),
+                "is_pr": "pull_request" in i,
+            }
+        )
+    smelt.sort(key=lambda e: (e.get("updated_at") or ""))
+    return {"open_smelt_issues": smelt, "open_issue_count": len(issues)}
+
+
 def check_exl3_35b(get):
     """Newest 35B-A3B EXL3 uploads (2-bpw-class watch)."""
     entries = _hf_models(
@@ -292,6 +327,7 @@ CHECKS = [
     ("exl3_35b", check_exl3_35b),
     ("novamlx_release", check_novamlx_release),
     ("vmlx_oq_loader", check_vmlx_oq_loader),
+    ("vmlx_smelt_issues", check_vmlx_smelt_issues),
 ]
 
 
@@ -299,7 +335,8 @@ def _ids_of(data):
     """Extract the set of repo ids / release tags that identify this check's result."""
     ids = set()
     if isinstance(data, dict):
-        for key in ("newest", "big_entries", "hits", "recent_bitnet", "two_bpw_hits"):
+        for key in ("newest", "big_entries", "hits", "recent_bitnet",
+                    "two_bpw_hits", "open_smelt_issues"):
             for e in data.get(key) or []:
                 if isinstance(e, dict) and e.get("id"):
                     ids.add(e["id"])
@@ -346,6 +383,7 @@ def diff_check(name, old, new):
         (["release", "tag"], "release tag"),
         (["newest_modified"], "newest upload"),
         (["oq_loader_present"], "oQ loader"),
+        (["open_issue_count"], "open issues"),
     ):
         v_old, v_new = scalar(path)
         if v_old != v_new and v_old is not None:
@@ -492,6 +530,21 @@ def format_baseline(results, errors):
                 % (
                     "PRESENT" if d["oq_loader_present"] else "absent",
                     ", ".join(d["loader_files"]),
+                )
+            )
+        elif name == "vmlx_smelt_issues":
+            out.append(
+                "  vmlx_smelt_issues: %d open issues, smelt-mentioned: %s"
+                % (
+                    d["open_issue_count"],
+                    ", ".join(
+                        "#%s %s%s" % (
+                            e["number"],
+                            e["title"],
+                            " [PR]" if e["is_pr"] else "",
+                        )
+                        for e in d["open_smelt_issues"]
+                    ) or "none",
                 )
             )
     return out
