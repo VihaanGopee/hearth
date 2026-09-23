@@ -20,6 +20,7 @@ from tools.watch_sweep import (
     check_jangqai_latest,
     check_novamlx_release,
     check_tq_gguf_70b,
+    check_vmlx_oq_loader,
     diff_check,
     format_baseline,
     format_report,
@@ -154,6 +155,61 @@ class TestNovamlxCheck(unittest.TestCase):
         self.assertTrue(any("release tag v0.9.0 -> v0.10.0" in l for l in lines))
 
 
+class TestVmlxOqLoader(unittest.TestCase):
+    FRAG = "jjang-ai/vmlx/contents/vmlx_engine/loaders"
+
+    def _contents(self, *names, dirs=()):
+        payload = [{"type": "file", "name": n} for n in names]
+        payload += [{"type": "dir", "name": n} for n in dirs]
+        return payload
+
+    def test_no_oq_loader_absent(self):
+        get = FakeGet(
+            [(self.FRAG, self._contents("__init__.py", "load_jangtq.py", "load_laguna.py"))]
+        )
+        d = check_vmlx_oq_loader(get)
+        self.assertFalse(d["oq_loader_present"])
+        self.assertEqual(
+            d["loader_files"], ["__init__.py", "load_jangtq.py", "load_laguna.py"]
+        )
+
+    def test_oq_loader_detected_case_insensitive(self):
+        get = FakeGet([(self.FRAG, self._contents("load_jang.py", "load_OQ.py"))])
+        d = check_vmlx_oq_loader(get)
+        self.assertTrue(d["oq_loader_present"])
+
+    def test_dirs_ignored_and_names_sorted(self):
+        get = FakeGet(
+            [(self.FRAG, self._contents("b.py", "a.py", dirs=("zzz",)))]
+        )
+        d = check_vmlx_oq_loader(get)
+        self.assertEqual(d["loader_files"], ["a.py", "b.py"])
+
+    def test_non_list_payload_is_watch_error(self):
+        get = FakeGet([(self.FRAG, {"message": "API rate limit exceeded"})])
+        with self.assertRaises(WatchError):
+            check_vmlx_oq_loader(get)
+
+    def test_baseline_line(self):
+        get = FakeGet([(self.FRAG, self._contents("load_jangtq.py"))])
+        bl = format_baseline({"vmlx_oq_loader": check_vmlx_oq_loader(get)}, {})
+        self.assertTrue(any("vmlx_oq_loader: oQ loader absent" in l for l in bl))
+
+    def test_diff_reports_flip_and_new_file(self):
+        old = {"loader_files": ["load_jangtq.py"], "oq_loader_present": False}
+        new = {"loader_files": ["load_jangtq.py", "load_oq.py"], "oq_loader_present": True}
+        changed, lines = diff_check("vmlx_oq_loader", old, new)
+        self.assertTrue(changed)
+        self.assertTrue(any("NEW load_oq.py" in l for l in lines))
+        self.assertTrue(any("oQ loader False -> True" in l for l in lines))
+
+    def test_diff_silent_when_unchanged(self):
+        d = {"loader_files": ["load_jangtq.py"], "oq_loader_present": False}
+        changed, lines = diff_check("vmlx_oq_loader", d, dict(d))
+        self.assertFalse(changed)
+        self.assertEqual(lines, [])
+
+
 class TestDdalcuCheck(unittest.TestCase):
     def test_json_serializable(self):
         get = FakeGet(
@@ -228,22 +284,29 @@ class TestRunSweep(unittest.TestCase):
             ("author=ddalcu", []),
             ("Nemotron-3-Nano", {"downloads": 0, "likes": 0}),
             ("author=microsoft&sort", [_entry("microsoft/BitNet-b1.58-2B-4T", 9000)]),
+            ("jjang-ai/vmlx/contents", [
+                {"type": "file", "name": "__init__.py"},
+                {"type": "file", "name": "load_jangtq.py"},
+                {"type": "file", "name": "load_laguna.py"},
+            ]),
             ("jjang-ai/vmlx", [{"tag_name": "v1.6.64", "published_at": "2026-09-19"}]),
             ("0xZKnw/mlxl3", [{"tag_name": "v1.1.1", "published_at": "2026-09-22"}]),
             ("cnshsliu/novamlx", [{"tag_name": "v0.9.0", "published_at": "2026-09-20"}]),
             ("search=35B-A3B-exl3", [_entry("yeasah/Qwen3.6-35B-A3B-exl3")]),
         ]
 
-    def test_all_ten_checks_run(self):
+    def test_all_eleven_checks_run(self):
         results, errors = run_sweep(FakeGet(self._routes()))
         self.assertEqual(errors, {})
-        self.assertEqual(len(results), 10)
-        self.assertEqual(len(CHECKS), 10)
+        self.assertEqual(len(results), 11)
+        self.assertEqual(len(CHECKS), 11)
 
     def test_one_failing_check_does_not_kill_sweep(self):
         get = FakeGet(self._routes(), fail=("jjang-ai/vmlx",))
         results, errors = run_sweep(get)
+        # both vmlx checks fetch URLs containing the fragment, both fail
         self.assertIn("vmlx_release", errors)
+        self.assertIn("vmlx_oq_loader", errors)
         self.assertEqual(len(results), 9)
 
     def test_report_and_baseline(self):
@@ -254,9 +317,11 @@ class TestRunSweep(unittest.TestCase):
         self.assertIn("BASELINE:", report)
         self.assertIn("tq: >=60B entries:", report)
         bl = format_baseline(results, errors)
-        self.assertEqual(len(bl), 10)
+        self.assertEqual(len(bl), 11)
         # release lines render tag + date
         self.assertTrue(any("v1.6.64" in l for l in bl))
+        # oQ loader line renders absence
+        self.assertTrue(any("vmlx_oq_loader: oQ loader absent" in l for l in bl))
 
     def test_ddalcu_baseline_names_hit_ids(self):
         results = {

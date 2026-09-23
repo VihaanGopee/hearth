@@ -1549,6 +1549,18 @@ measuring where quality actually breaks.
       ever ships an oQ loader, the oQ3/oQ4e profiles (not just oQ2) become
       rung-relevant candidates. Watch download counts and quality reports
       as a signal of oQ-ecosystem health. (NEW 2026-09-22)
+      SWEEP 2026-09-22 ~18:55 PDT: still NO oQ loader on vmlx main —
+      recursive tree check: vmlx_engine/loaders holds __init__,
+      dsv4_chat_encoder, encoding_dsv4_0731, load_jangtq (x4 variants),
+      load_laguna, load_mistral3, load_zaya (+ utils: jang, flash_moe,
+      smelt; models: codebook_expert_loader, qwen4_exp) — zero 'oq'
+      anywhere; vmlx still v1.6.64. The oQ2+Smelt plan stays DORMANT;
+      JANG_2S remains the rung-4 pick. This re-check is now AUTOMATED as
+      the 11th watch check (`vmlx_oq_loader` in tools/watch_sweep.py:
+      lists the loaders dir, reports loader_files + oq_loader_present;
+      a NEW loader file or a False->True flip shows in the sweep deltas)
+      — if it ever flips, revive the oQ2 path (oQ2's 64% MMLU is the best
+      measured ~2-bit 35B datapoint).
 
 - [x] Watch automation: `tools/watch_sweep.py` — LANDED 2026-09-22 (~15:25
       session): the 9 recurring HF/GitHub checks (TQ1_0/TQ2_0 top-50 >=60B,

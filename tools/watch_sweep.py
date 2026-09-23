@@ -18,6 +18,9 @@ Checks:
   9. exl3_35b        — newest 35B-A3B EXL3 uploads (2-bpw-class watch)
   10. novamlx_release — latest novamlx GitHub release (cnshsliu/novamlx;
       TIE/Smelt paging + 2-bit format support are the watch conditions)
+  11. vmlx_oq_loader — whether vmlx main ships an oQ-format loader (the
+      dormant oQ2 rung-4 path: Jundot's oQ family has the best measured
+      ~2-bit 35B datapoint but vmlx can't serve it)
 
 Usage:
     python3 -m tools.watch_sweep [--snapshot PATH] [--full]
@@ -234,6 +237,32 @@ def check_novamlx_release(get):
     return {"release": _gh_latest_release("cnshsliu/novamlx", get)}
 
 
+def check_vmlx_oq_loader(get):
+    """Whether vmlx ships an oQ-format loader (the dormant oQ2 rung-4 path).
+
+    Jundot's oQ family (oQ2/oQ3e/oQ4e, incl. DeepSeek-V4.1-Flash at 2-3.8k
+    downloads) is the healthiest ~2-bit MoE ecosystem on HF with measured
+    quality datapoints (oQ2 64% MMLU on the 3.5 variant), but the rung-4
+    oQ2 plan is dormant because vmlx's loaders are jang / jangtq /
+    laguna / mistral3 / zaya / qwen4_exp / dsv4 — no oQ. If a loader file
+    mentioning 'oq' appears, the dormant oQ2 path is worth reviving.
+    """
+    entries = get(
+        "%s/jjang-ai/vmlx/contents/vmlx_engine/loaders?ref=main" % _GH
+    )
+    if not isinstance(entries, list):
+        raise WatchError("unexpected contents payload: %r" % (entries,))
+    names = sorted(
+        e.get("name")
+        for e in entries
+        if isinstance(e, dict) and e.get("type") == "file" and e.get("name")
+    )
+    return {
+        "loader_files": names,
+        "oq_loader_present": any("oq" in n.lower() for n in names),
+    }
+
+
 def check_exl3_35b(get):
     """Newest 35B-A3B EXL3 uploads (2-bpw-class watch)."""
     entries = _hf_models(
@@ -262,6 +291,7 @@ CHECKS = [
     ("mlxl3_release", check_mlxl3_release),
     ("exl3_35b", check_exl3_35b),
     ("novamlx_release", check_novamlx_release),
+    ("vmlx_oq_loader", check_vmlx_oq_loader),
 ]
 
 
@@ -282,6 +312,9 @@ def _ids_of(data):
         for key in ("newest_id",):
             if data.get(key):
                 ids.add(data[key])
+        for n in data.get("loader_files") or []:
+            if isinstance(n, str):
+                ids.add(n)
     return ids
 
 
@@ -312,6 +345,7 @@ def diff_check(name, old, new):
         (["downloads"], "nemotron downloads"),
         (["release", "tag"], "release tag"),
         (["newest_modified"], "newest upload"),
+        (["oq_loader_present"], "oQ loader"),
     ):
         v_old, v_new = scalar(path)
         if v_old != v_new and v_old is not None:
@@ -451,6 +485,14 @@ def format_baseline(results, errors):
             r = d["release"]
             out.append(
                 "  %s: %s (%s)" % (name, r["tag"], (r["published_at"] or "?")[:10])
+            )
+        elif name == "vmlx_oq_loader":
+            out.append(
+                "  vmlx_oq_loader: oQ loader %s (loaders: %s)"
+                % (
+                    "PRESENT" if d["oq_loader_present"] else "absent",
+                    ", ".join(d["loader_files"]),
+                )
             )
     return out
 
