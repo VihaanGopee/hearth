@@ -599,11 +599,16 @@ measuring where quality actually breaks.
       in v1 (restart drops the big model). Per-backend dicts take the same
       keys as the top-level config blocks. Default `backend: ollama` +
       `qwen3:8b` untouched; clear LLMError if no `big` spec.
-- [ ] Mac-side: cascade validation — qwen3:8b resident + 35B-A3B IQ2_M
-      (10.6 GB) via llamacpp as the big model; measure escalation rate on
-      real usage, resident-RAM before/after first escalation, and whether
-      the heuristic thresholds (≈2000 chars / 2 keyword hits) over- or
-      under-escalate (needs Justin's Mac)
+- [ ] Mac-side: cascade validation — qwen3:8b resident + 35B-A3B
+      UD-IQ2_XXS (10.66 GB, the rung-3 file) via llamacpp as the big
+      model; measure escalation rate on real usage, resident-RAM
+      before/after first escalation, and whether the heuristic thresholds
+      (≈2000 chars / 2 keyword hits) over- or under-escalate (needs
+      Justin's Mac)
+      CORRECTION 2026-09-22: was "IQ2_M (10.6 GB)" — the survey's stale
+      figure. The rung-3 file is UD-IQ2_XXS at 10.66 GB measured; IQ2_M
+      re-measures 11.39 GB and does not fit the ~11 GB budget
+      (research/recipes/RUNG3_qwen3_5_35b_a3b_moe.md).
 - [ ] Cascade router calibration — log (heuristic score, verify decision,
       final route) per turn and review after a week of real use to tune
       the keyword set and thresholds; consider a learned router only if
@@ -995,7 +1000,21 @@ measuring where quality actually breaks.
       the standing direction (intelligence first); speed on this
       transport stays mlxl3's own published numbers until a server
       transport exists. Remaining: agent.py wiring, still contingent on
-      the Mac-side stdout parse.
+      the Mac-side stdout parse, plus the per-invocation model-load-cost
+      measurement (whether `mlxl3 run --prompt` reloads the weights on
+      every call — decides whether the one-shot bridge is batch-usable
+      for the battery and for agent turns, per src/mlxl3_cli.py's
+      checklist).
+- [ ] Mac-side: mlxl3 DFlash2 speculative decode on the 2.08bpw EXL3
+      rung-4 candidate — the speed-optimization layer for the mlxl3
+      track, complementing the llamacpp-backend and vmlx speculative
+      items. Draft weights: incoai/Qwen3.6-35B-A3B-Splash (~457 MiB),
+      opt-in, greedy-only; mlxl3's M5 campaign reports 74.645 tok/s vs
+      47.545 tok/s non-speculative on the 2.49bpw test file. M1 Pro
+      numbers unmeasured; whether DFlash2's CLI exposure exists at all
+      is still a Mac-side validation step (src/mlxl3_cli.py). Measure
+      decode tok/s with DFlash2 on/off on the yeasah 2.08bpw weights
+      once the transport is validated. (NEW 2026-09-22)
 - [x] Quant R&D: JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S candidate — NEW
       2026-09-21 (pm sweep): prebuilt MLX JANG 2-bit for OUR rung-3
       model. Measured **11.67 GB** via HF tree API — but the model card
