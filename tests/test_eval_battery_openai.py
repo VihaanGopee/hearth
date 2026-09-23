@@ -8,6 +8,7 @@ runs happen on the Mac via the CLI.
 
 import json
 import os
+import stat
 import sys
 import threading
 import unittest
@@ -20,9 +21,12 @@ from tools.eval_battery_openai import (
     BatteryError,
     _api_error_message,
     generate,
+    main,
     parse_args,
     run_model,
+    run_model_mlxl3,
 )
+from src.mlxl3_cli import Mlxl3CliClient
 
 
 def chat_body(content, completion_tokens=None, think_prefix=False):
@@ -207,6 +211,188 @@ class TestOpenAIBattery(unittest.TestCase):
         args = parse_args(["--models", "a", "b", "--items", "math-widgets"])
         self.assertEqual(args.models, ["a", "b"])
         self.assertEqual(args.items, "math-widgets")
+
+
+FAKE_CLI = """\
+#!/usr/bin/env python3
+import json, os, sys, time
+dest = os.environ.get("FAKE_MLXL3_ARGV_FILE")
+if dest:
+    with open(dest, "w") as f:
+        f.write(json.dumps(sys.argv[1:]))
+time.sleep(float(os.environ.get("FAKE_MLXL3_SLEEP", "0")))
+if os.environ.get("FAKE_MLXL3_FAIL"):
+    sys.stderr.write(os.environ["FAKE_MLXL3_FAIL"])
+    sys.exit(1)
+sys.stdout.write(os.environ.get("FAKE_MLXL3_REPLY", "canned reply"))
+"""
+
+
+class TestMlxl3BatteryTransport(unittest.TestCase):
+    """--transport mlxl3 drives the battery through the mlxl3 one-shot CLI.
+
+    The mlxl3 binary is Mac-only, so these tests run run_model_mlxl3 (and
+    main()'s mlxl3 branch) against a fake CLI script. This verifies the
+    transport plumbing (client construction, prompt passing, answer
+    extraction, error mapping); the real one-shot stdout shape still needs
+    a Mac (see src/mlxl3_cli.py).
+    """
+
+    def setUp(self):
+        self._env = dict(os.environ)
+        for k in ("FAKE_MLXL3_ARGV_FILE", "FAKE_MLXL3_FAIL",
+                  "FAKE_MLXL3_SLEEP", "FAKE_MLXL3_REPLY"):
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._env)
+
+    def _fake_cli(self, tmp_dir):
+        path = os.path.join(tmp_dir, "fake_mlxl3")
+        with open(path, "w") as f:
+            f.write(FAKE_CLI)
+        os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
+        return path
+
+    def _client(self, tmp_dir, **kw):
+        kw.setdefault("cli_bin", self._fake_cli(tmp_dir))
+        kw.setdefault("model", "yeasah/Qwen3.6-35B-A3B-exl3")
+        kw.setdefault("max_tokens", 512)
+        return Mlxl3CliClient(**kw)
+
+    def test_scoring_via_real_checks(self):
+        # The fake CLI always answers "5": exact-match items expecting "5"
+        # pass, everything else fails — same shape as the HTTP test.
+        import tempfile
+        os.environ["FAKE_MLXL3_REPLY"] = "5"
+        with tempfile.TemporaryDirectory() as d:
+            client = self._client(d)
+            items = [i for i in BATTERY if i["id"] in
+                     ("math-widgets", "trick-batball", "instr-done")]
+            results, total_gen = run_model_mlxl3(client, items)
+            by_id = {i["id"]: (a, p) for i, a, p, _ in results}
+            self.assertTrue(by_id["math-widgets"][1])   # exact "5"
+            self.assertTrue(by_id["trick-batball"][1])  # exact "5"
+            self.assertFalse(by_id["instr-done"][1])    # exact "done"
+            self.assertEqual(total_gen, 0)  # CLI exposes no token counts
+
+    def test_think_stripped(self):
+        import tempfile
+        os.environ["FAKE_MLXL3_REPLY"] = "<think>pondering</think>5"
+        with tempfile.TemporaryDirectory() as d:
+            client = self._client(d)
+            items = [i for i in BATTERY if i["id"] == "math-widgets"]
+            results, _ = run_model_mlxl3(client, items)
+            _item, answer, passed, _failed = results[0]
+            self.assertTrue(passed)
+            self.assertEqual(answer, "5")
+
+    def test_prompt_and_argv_shape(self):
+        import tempfile
+        os.environ["FAKE_MLXL3_REPLY"] = "ok"
+        with tempfile.TemporaryDirectory() as d:
+            argv_file = os.path.join(d, "argv.json")
+            os.environ["FAKE_MLXL3_ARGV_FILE"] = argv_file
+            client = self._client(d)
+            items = [i for i in BATTERY if i["id"] == "math-widgets"]
+            run_model_mlxl3(client, items)
+            with open(argv_file) as f:
+                argv = json.load(f)
+            self.assertEqual(argv[0], "run")
+            self.assertEqual(argv[1], "yeasah/Qwen3.6-35B-A3B-exl3")
+            prompt = argv[argv.index("--prompt") + 1]
+            self.assertIn(items[0]["prompt"], prompt)
+            self.assertEqual(argv[argv.index("--max-tokens") + 1], "512")
+
+    def test_cli_failure_marks_item_failed(self):
+        import tempfile
+        os.environ["FAKE_MLXL3_FAIL"] = "boom"
+        with tempfile.TemporaryDirectory() as d:
+            client = self._client(d)
+            items = [i for i in BATTERY if i["id"] == "math-widgets"]
+            results, total_gen = run_model_mlxl3(client, items)
+            _item, answer, passed, failed = results[0]
+            self.assertIsNone(answer)
+            self.assertFalse(passed)
+            self.assertEqual(failed, ["request error"])
+            self.assertEqual(total_gen, 0)
+
+    def test_missing_binary_marks_item_failed(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            client = Mlxl3CliClient(model="m",
+                                    cli_bin=os.path.join(d, "no-such-bin"))
+            items = [i for i in BATTERY if i["id"] == "math-widgets"]
+            results, _ = run_model_mlxl3(client, items)
+            _item, answer, passed, failed = results[0]
+            self.assertIsNone(answer)
+            self.assertFalse(passed)
+            self.assertEqual(failed, ["request error"])
+
+    def test_cli_timeout_marks_item_failed(self):
+        import tempfile
+        os.environ["FAKE_MLXL3_SLEEP"] = "2"
+        with tempfile.TemporaryDirectory() as d:
+            client = self._client(d, timeout=1)
+            items = [i for i in BATTERY if i["id"] == "math-widgets"]
+            results, _ = run_model_mlxl3(client, items)
+            _item, answer, passed, failed = results[0]
+            self.assertIsNone(answer)
+            self.assertFalse(passed)
+            self.assertEqual(failed, ["request error"])
+
+    def test_parse_args_mlxl3_defaults(self):
+        args = parse_args(["--models", "m"])
+        self.assertEqual(args.transport, "http")
+        self.assertIsNone(args.mlxl3_model)
+        self.assertEqual(args.mlxl3_bin, "mlxl3")
+        self.assertEqual(args.mlxl3_timeout, 300)
+
+    def test_parse_args_mlxl3_options(self):
+        args = parse_args(["--models", "m", "--transport", "mlxl3",
+                           "--mlxl3-model", "custom", "--mlxl3-bin", "/b",
+                           "--mlxl3-timeout", "42"])
+        self.assertEqual(args.transport, "mlxl3")
+        self.assertEqual(args.mlxl3_model, "custom")
+        self.assertEqual(args.mlxl3_bin, "/b")
+        self.assertEqual(args.mlxl3_timeout, 42)
+
+    def test_main_mlxl3_end_to_end(self):
+        import contextlib
+        import io
+        import tempfile
+        os.environ["FAKE_MLXL3_REPLY"] = "5"
+        with tempfile.TemporaryDirectory() as d:
+            fake = self._fake_cli(d)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = main(["--transport", "mlxl3", "--models", "m",
+                           "--mlxl3-bin", fake, "--items", "math-widgets"])
+            self.assertEqual(rc, 0)
+            text = out.getvalue()
+            self.assertIn("PASS", text)
+            self.assertIn("1/1", text)  # print_scorecard tally for the item
+            self.assertIn("mlxl3 one-shot", text)
+
+    def test_main_mlxl3_model_override(self):
+        import contextlib
+        import io
+        import tempfile
+        os.environ["FAKE_MLXL3_REPLY"] = "ok"
+        with tempfile.TemporaryDirectory() as d:
+            argv_file = os.path.join(d, "argv.json")
+            os.environ["FAKE_MLXL3_ARGV_FILE"] = argv_file
+            fake = self._fake_cli(d)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = main(["--transport", "mlxl3", "--models", "entry-name",
+                           "--mlxl3-model", "override-name",
+                           "--mlxl3-bin", fake, "--items", "math-widgets"])
+            self.assertEqual(rc, 1)  # "ok" fails the exact checks
+            with open(argv_file) as f:
+                argv = json.load(f)
+            self.assertEqual(argv[1], "override-name")
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.measure_openai import (
     MeasureError,
     chat_completions,
+    main,
     normalize_base_url,
     parse_args,
     strip_think,
@@ -187,6 +188,18 @@ class TestOpenAIMeasure(unittest.TestCase):
         self.assertEqual(args.target, 10.0)  # rung-4 pass bar
         self.assertEqual(args.base_url, "http://localhost:8080")
         self.assertEqual(args.num_predict, 256)
+        self.assertEqual(args.transport, "http")
+
+    def test_mlxl3_transport_refused_loudly(self):
+        # The one-shot CLI exposes no token counts, so tok/s would be
+        # meaningless: measure_openai.py must refuse, not fake numbers.
+        import contextlib
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = main(["--model", "m", "--transport", "mlxl3"])
+        self.assertEqual(rc, 2)
+        self.assertIn("not supported", err.getvalue())
+        self.assertIn("eval_battery_openai.py", err.getvalue())
 
 
 if __name__ == "__main__":

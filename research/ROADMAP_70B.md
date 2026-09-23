@@ -970,6 +970,22 @@ measuring where quality actually breaks.
       CONTINGENT on the Mac-side stdout-parse validation in
       src/mlxl3_cli.py (don't wire a bridge whose real stdout shape is
       still a guess). (NEW 2026-09-22)
+      PARTIALLY LANDED 2026-09-22 (~19:25 session): the
+      eval_battery_openai.py adapter landed as `--transport mlxl3`
+      (`run_model_mlxl3`, one Mlxl3CliClient per model, --max-tokens 512,
+      --mlxl3-model/--mlxl3-bin/--mlxl3-timeout flags; 10 new fake-CLI
+      tests incl. an end-to-end main() run; suite 516 green). UNTESTED-ON-MAC
+      — the real one-shot stdout shape is still the Mac-side validation
+      in src/mlxl3_cli.py. The measure_openai.py speed adapter was
+      DELIBERATELY NOT built: the one-shot CLI exposes no token counts
+      and its per-invocation model-load cost is unmeasured, so tok/s
+      would be meaningless — measure_openai.py refuses --transport mlxl3
+      loudly with a pointer to the battery (test-pinned). The
+      intelligence-battery half is the rung-4 verdict that matters per
+      the standing direction (intelligence first); speed on this
+      transport stays mlxl3's own published numbers until a server
+      transport exists. Remaining: agent.py wiring, still contingent on
+      the Mac-side stdout parse.
 - [x] Quant R&D: JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S candidate — NEW
       2026-09-21 (pm sweep): prebuilt MLX JANG 2-bit for OUR rung-3
       model. Measured **11.67 GB** via HF tree API — but the model card

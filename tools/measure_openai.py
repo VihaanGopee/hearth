@@ -30,6 +30,13 @@ are stripped from the text before needle/count matching so a reasoning trace
 can't break the sanity checks; the stripping is logged in the report.
 
 Tested on Linux against a fake SSE server (see tests/test_measure_openai.py).
+
+This harness measures decode tok/s, which needs token counts. The mlxl3
+one-shot CLI (src/mlxl3_cli.py) exposes NO token counts and its
+per-invocation model-load cost is unmeasured, so a tok/s figure would be
+meaningless — --transport mlxl3 is therefore refused loudly (use
+tools/eval_battery_openai.py --transport mlxl3 for the EXL3 intelligence
+battery instead).
 """
 
 import argparse
@@ -172,11 +179,24 @@ def parse_args(argv=None):
                    help="Max tokens per speed prompt (default: 256)")
     p.add_argument("--api-key", default=None,
                    help="Bearer token; default from OPENAI_API_KEY env")
+    p.add_argument("--transport", choices=("http", "mlxl3"), default="http",
+                   help="http: OpenAI-compatible server (default); "
+                        "mlxl3: refused — the one-shot CLI exposes no token "
+                        "counts, so tok/s would be meaningless")
     return p.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.transport == "mlxl3":
+        print("error: --transport mlxl3 is not supported by "
+              "tools/measure_openai.py: the one-shot mlxl3 CLI exposes no "
+              "token counts and its per-invocation model-load cost is "
+              "unmeasured, so a tok/s figure would be meaningless. Use "
+              "tools/eval_battery_openai.py --transport mlxl3 for the "
+              "intelligence battery (the rung verdict that matters).",
+              file=sys.stderr)
+        return 2
     meta = []
     report = run_rung(
         args.model, args.base_url, args.num_predict, 0, args.target,

@@ -26,6 +26,23 @@ switch, so if the served model emits ``<think>`` blocks they are stripped
 from the answer before checking (same as tools/measure_openai.py); the
 strip is noted in the per-item output.
 
+mlxl3 transport (Mac-side): --transport mlxl3 drives the mlxl3 one-shot
+CLI (``mlxl3 run <model> --prompt ... --max-tokens 512``) via
+src/mlxl3_cli.py, so the EXL3 rung-4 candidate
+(research/model_profiles.yaml: qwen3.6-35b-a3b-exl3-2bpw) can be scored
+with the same battery without any server:
+
+    python3 tools/eval_battery_openai.py --transport mlxl3 \\
+        --models yeasah/Qwen3.6-35B-A3B-exl3 --items math-widgets,trick-batball
+
+The CLI is greedy-only (temp=0 discipline holds trivially) and one-shot
+(one subprocess per item); the real one-shot stdout shape is
+UNTESTED-ON-MAC here — the Mac-side validation in src/mlxl3_cli.py
+(echo/banner stripping) still applies. Speed is NOT measured on this
+transport: the CLI exposes no token counts and per-invocation model-load
+cost is unmeasured, so tok/s would be meaningless — see
+tools/measure_openai.py, which refuses --transport mlxl3 loudly.
+
 Exit code: 0 when all checks pass, 1 otherwise (and 2 for CLI/request
 errors). The full per-item log is printed to stdout so it can be pasted
 back as the measurement record.
@@ -52,6 +69,9 @@ from tools.eval_battery import (  # noqa: F401  (re-exported: same battery)
     select_items,
 )
 from tools.measure_openai import normalize_base_url, strip_think
+
+from src.llm import LLMError
+from src.mlxl3_cli import Mlxl3CliClient
 
 
 def _api_error_message(payload):
@@ -106,14 +126,18 @@ def generate(base_url, model, prompt, num_predict=512, api_key=None,
     return strip_think(content), usage
 
 
-def run_model(base_url, model, items, api_key=None, show_answers=False):
+def _run_items(generate_one, items, show_answers=False):
+    """Shared item loop.
+
+    ``generate_one(prompt)`` returns ``(answer_text, usage_dict)``; raises
+    BatteryError on transport failure. Returns (results, total_gen) where
+    results are (item, answer, passed, failed) tuples.
+    """
     results = []
     total_gen = 0
-    print("MODEL %s (%d items)" % (model, len(items)), flush=True)
     for i, item in enumerate(items, 1):
         try:
-            answer, usage = generate(base_url, model, item["prompt"],
-                                     api_key=api_key)
+            answer, usage = generate_one(item["prompt"])
             total_gen += usage.get("completion_tokens") or 0
         except BatteryError as e:
             print("  [%s] ERROR: %s" % (item["id"], e), flush=True)
@@ -129,6 +153,34 @@ def run_model(base_url, model, items, api_key=None, show_answers=False):
             print("       answer: %s" % answer.strip()[:4000], flush=True)
         results.append((item, answer, passed, failed))
     return results, total_gen
+
+
+def run_model(base_url, model, items, api_key=None, show_answers=False):
+    print("MODEL %s (%d items)" % (model, len(items)), flush=True)
+    return _run_items(
+        lambda prompt: generate(base_url, model, prompt, api_key=api_key),
+        items, show_answers)
+
+
+def run_model_mlxl3(client, items, show_answers=False):
+    """Battery against an Mlxl3CliClient (Mac-side EXL3 one-shot transport).
+
+    UNTESTED-ON-MAC: the client is exercised here against a fake CLI in
+    tests; the real one-shot stdout shape is the Mac-side validation in
+    src/mlxl3_cli.py. Greedy-only, so the temp=0 discipline holds
+    trivially; <think> blocks are still stripped for uniformity.
+    """
+    print("MODEL %s (%d items)" % (client.model, len(items)), flush=True)
+
+    def _one(prompt):
+        try:
+            result = client.chat([{"role": "user", "content": prompt}],
+                                 tools=[])
+        except LLMError as e:
+            raise BatteryError("mlxl3 CLI error: %s" % e)
+        return strip_think(result.get("content") or ""), {}
+
+    return _run_items(_one, items, show_answers)
 
 
 def parse_args(argv=None):
@@ -149,6 +201,18 @@ def parse_args(argv=None):
                         "(default: http://localhost:8080)")
     p.add_argument("--api-key", default=None,
                    help="Bearer token; default from OPENAI_API_KEY env")
+    p.add_argument("--transport", choices=("http", "mlxl3"), default="http",
+                   help="http: OpenAI-compatible server (default); "
+                        "mlxl3: drive the mlxl3 one-shot CLI on the Mac "
+                        "(EXL3 weights, no server needed; greedy-only, "
+                        "UNTESTED-ON-MAC)")
+    p.add_argument("--mlxl3-model", default=None, metavar="NAME",
+                   help="mlxl3 model name (HF repo id or local name as "
+                        "mlxl3 expects it); defaults to each --models entry")
+    p.add_argument("--mlxl3-bin", default="mlxl3",
+                   help="mlxl3 binary (default: mlxl3 on PATH)")
+    p.add_argument("--mlxl3-timeout", type=int, default=300,
+                   help="per-item CLI timeout in seconds (default: 300)")
     return p.parse_args(argv)
 
 
@@ -162,12 +226,29 @@ def main(argv=None):
 
     all_results = {}
     try:
-        for model in args.models:
-            results, total_gen = run_model(args.base_url, model, items,
-                                           api_key=args.api_key,
-                                           show_answers=args.show_answers)
-            all_results[model] = results
-            print("  (completion tokens generated: %d)" % total_gen)
+        if args.transport == "mlxl3":
+            # One Mlxl3CliClient per model: the CLI is one-shot, so each
+            # item is its own subprocess; the client holds only the
+            # model/bin/timeout config.
+            print("NOTE: mlxl3 one-shot transport (Mac-side, untested "
+                  "here): greedy-only, one subprocess per item; <think> "
+                  "blocks stripped as usual.", flush=True)
+            for entry in args.models:
+                client = Mlxl3CliClient(
+                    model=args.mlxl3_model or entry,
+                    cli_bin=args.mlxl3_bin, max_tokens=512,
+                    timeout=args.mlxl3_timeout)
+                results, _total_gen = run_model_mlxl3(
+                    client, items, show_answers=args.show_answers)
+                all_results[entry] = results
+                print("  (mlxl3 one-shot calls: %d)" % len(items))
+        else:
+            for model in args.models:
+                results, total_gen = run_model(
+                    args.base_url, model, items, api_key=args.api_key,
+                    show_answers=args.show_answers)
+                all_results[model] = results
+                print("  (completion tokens generated: %d)" % total_gen)
     except BatteryError as e:
         print("ERROR: %s" % e, file=sys.stderr)
         return 2
