@@ -198,6 +198,87 @@ class TestRung4RecipeSmeltFailureNote(unittest.TestCase):
         self.assertIn("non-Smelt serve", text)
 
 
+class TestRung4Exl3RecipeNumbers(unittest.TestCase):
+    """research/recipes/RUNG4_exl3_mlxl3.md.
+
+    The second rung-4 candidate: yeasah/Qwen3.6-35B-A3B-exl3 2.08bpw
+    (author-reported 9.88 GiB resident under exllamav3 with embeddings
+    CPU-offloaded; mlxl3's resident is UNMEASURED) driven over the
+    mlxl3 one-shot CLI bridge.
+    """
+
+    def _kv_2048_f16(self):
+        r = estimate(35.0, "q4_k_m", 2048, arch="qwen3.6-35b-a3b",
+                     cache_type="f16")
+        self.assertTrue(r["ok"], r.get("error"))
+        return r["kv_cache_gb"]
+
+    def test_arch_entry_kv_2048_f16(self):
+        # 3.6 skeleton: GQA-2 KV heads, head_dim 256, only the 10
+        # full-attention layers carry KV (full_attention_interval=4) —
+        # same 0.04 GB as the 3.5 arch in the JANG_2S recipe.
+        self.assertAlmostEqual(self._kv_2048_f16(), 0.04, delta=0.03)
+
+    def test_total_with_author_reported_resident_fits_budget_tight(self):
+        # Recipe: 9.88 (author-reported resident, NOT independently
+        # measured) + 0.04 KV + ~1.0 runtime = ~10.9 GB — inside the
+        # ~11 GB usable budget but tight.
+        total = 9.88 + self._kv_2048_f16() + 1.0
+        self.assertAlmostEqual(total, 10.92, delta=0.15)
+        self.assertLess(total, 11.0)
+
+    def test_roofline_floor_above_usable_bar(self):
+        # Bandwidth floor: 200 GB/s streaming 9.88 GB resident.
+        floor = 200.0 / 9.88
+        self.assertAlmostEqual(floor, 20.2, delta=0.3)
+        self.assertGreater(floor, 10.0)   # usable bar per standing direction
+
+    def test_recipe_file_exists(self):
+        self.assertTrue(
+            os.path.isfile(os.path.join(RECIPES, "RUNG4_exl3_mlxl3.md")))
+
+
+class TestRung4Exl3RecipeCaveats(unittest.TestCase):
+    """The EXL3 recipe must keep the honesty caveats a future edit could
+    silently drop: author-reported (not measured) figures, the
+    not-same-base comparison, the macOS 26.2 / Gatekeeper install
+    friction, and the deliberate --transport mlxl3 speed refusal.
+    """
+
+    def _text(self):
+        with open(os.path.join(RECIPES, "RUNG4_exl3_mlxl3.md")) as f:
+            return f.read()
+
+    def test_candidate_identity(self):
+        text = self._text()
+        self.assertIn("yeasah/Qwen3.6-35B-A3B-exl3", text)
+        self.assertIn("2.08bpw", text)
+
+    def test_caveats_present(self):
+        text = self._text()
+        self.assertIn("author-reported", text)
+        self.assertIn("Not same-base", text)
+        self.assertIn("macOS 26.2", text)
+        self.assertIn("Gatekeeper", text)
+        self.assertIn("mlxl3", text)
+        self.assertIn("not notarized", text)
+
+    def test_speed_refusal_documented(self):
+        # measure_openai.py refuses --transport mlxl3; the recipe must
+        # say so or a reader could expect tok/s from our harness.
+        text = self._text()
+        self.assertIn("REFUSES", text)
+        self.assertIn("measure_openai.py", text)
+
+    def test_wiring_contingency_documented(self):
+        # agent.py wiring waits on the Mac-side stdout parse — the
+        # recipe must not promise an agent backend.
+        text = self._text()
+        self.assertIn("not", text)
+        self.assertIn("wired into agent.py yet", text)
+        self.assertIn("stdout-parse", text)
+
+
 class TestRecipeConsistency(unittest.TestCase):
     """Every recipe named in model_profiles.yaml must exist on disk."""
 
@@ -215,6 +296,7 @@ class TestRecipeConsistency(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(RECIPES, "RUNG2_qwen3_14b_20tps.md")))
         self.assertTrue(os.path.isfile(os.path.join(RECIPES, "RUNG3_qwen3_5_35b_a3b_moe.md")))
         self.assertTrue(os.path.isfile(os.path.join(RECIPES, "RUNG4_jang2s_35b_smelt.md")))
+        self.assertTrue(os.path.isfile(os.path.join(RECIPES, "RUNG4_exl3_mlxl3.md")))
 
 
 class TestModelProfiles(unittest.TestCase):

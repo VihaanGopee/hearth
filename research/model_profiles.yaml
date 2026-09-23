@@ -150,7 +150,11 @@ profiles:
       unmeasured (M5-only campaign); mlxl3 release build requires macOS
       26.2+. Comparison caveat: 3.6 base vs rung-3's 3.5 base, so not
       same-base — a Qwen3.5-35B-A3B 2bpw EXL3 upload would enable the
-      apples-to-apples comparison vs IQ2_XXS.
+      apples-to-apples comparison vs IQ2_XXS. Hearth drives the battery
+      over the mlxl3 one-shot CLI bridge
+      (tools/eval_battery_openai.py --transport mlxl3, untested-on-Mac;
+      agent.py wiring contingent on Mac-side stdout-parse validation).
+      Recipe: research/recipes/RUNG4_exl3_mlxl3.md.
 
   - name: qwen3-30b-a3b-Q3_K_M
     params_b: 30
