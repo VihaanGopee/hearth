@@ -945,20 +945,31 @@ measuring where quality actually breaks.
       `--prompt` mode is the hook a CLI-subprocess bridge would use (see
       new backlog item below). The 2.08bpw EXL3 candidate is now tracked
       as a profile in research/model_profiles.yaml (status: watch).
-- [ ] Hearth: mlxl3 CLI-subprocess bridge design — NEW 2026-09-22: if
-      mlxl3 never ships server mode, the one-shot `mlxl3 run <model>
-      --prompt "..." --max-tokens N` CLI is the only programmatic hook.
-      An OpenAI-shaped subprocess adapter in Hearth would unlock the
-      2.08bpw EXL3 weights (research/model_profiles.yaml, status watch)
-      for tools/measure_openai.py + tools/eval_battery_openai.py without
-      HTTP. Caveats (all Mac-side, unverifiable from here): CLI is
-      greedy-only (no temperature), stdout parsing unvalidated, per-call
-      model-load cost unknown (check `mlxl3 run --help` on the Mac — if
-      it reloads weights per invocation the bridge is a batch tool, not
-      an interactive backend), DFlash2 toggle is a Desktop switch (verify
-      any CLI exposure). Write the adapter against a stub fake-CLI for
-      tests; mark untested-on-Mac; do not wire as any default. Only
-      pursue if server mode doesn't land.
+- [x] Hearth: mlxl3 CLI-subprocess bridge design — LANDED 2026-09-22 as
+      `src/mlxl3_cli.py` (`Mlxl3CliClient`: chat(messages, tools) ->
+      {"role","content","tool_calls":None} over `mlxl3 run <model>
+      --prompt ... --max-tokens N` via subprocess; greedy-only so no
+      temperature; chat() with non-empty tools raises LLMError rather
+      than silently dropping schemas; messages rendered as a role-labeled
+      transcript). 10 new tests against a fake CLI script (argv capture,
+      prompt rendering, canned reply, non-zero-exit stderr surfacing,
+      missing binary, timeout, tools refusal), suite 498 green. NOT wired
+      into agent.py (no default); Mac-side validation steps documented in
+      the module docstring: real one-shot stdout parsing (echo/banners),
+      whether `run` reloads weights per invocation (batch tool vs
+      interactive backend), DFlash2 CLI exposure, and prompt rendering
+      (transcript vs raw last user message, depending on whether --prompt
+      gets the chat template applied). Agent/tool wiring is the explicit
+      next step (item below). Justification for pursuing stands: mlxl3
+      v1.1.1 still has no HTTP/OpenAI server surface (doc check
+      2026-09-22 ~17:50 PDT).
+- [ ] Hearth: wire the mlxl3 CLI bridge into agent.py (`backend: mlxl3`
+      opt-in, mirroring the mlx-backend precedent) and add
+      generate_fn adapters so tools/measure_openai.py +
+      tools/eval_battery_openai.py can drive the 2.08bpw EXL3 candidate —
+      CONTINGENT on the Mac-side stdout-parse validation in
+      src/mlxl3_cli.py (don't wire a bridge whose real stdout shape is
+      still a guess). (NEW 2026-09-22)
 - [x] Quant R&D: JANGQ-AI/Qwen3.5-35B-A3B-JANG_2S candidate — NEW
       2026-09-21 (pm sweep): prebuilt MLX JANG 2-bit for OUR rung-3
       model. Measured **11.67 GB** via HF tree API — but the model card
